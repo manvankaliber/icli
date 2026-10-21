@@ -1,0 +1,6 @@
+/logo-without-border.svg
+  cross-origin-resource-policy: cross-origin
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+/docs/guide/usage/icloud-cli/*.md
+  Content-Type: text/markdown; charset=utf-8

@@ -1,0 +1,7 @@
+/target/
+/.svelte-kit/
+/website/.svelte-kit/
+/website/node_modules/
+/website/build/
+/website/.vercel/
+.DS_Store

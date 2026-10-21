@@ -1,0 +1,52 @@
+packages:
+  - "!sponsors"
+allowBuilds:
+  "@vgpu/adapter-node": set this to true or false
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+  vue-demi: true
+  webgpu: set this to true or false
+  workerd: true
+catalog:
+  vite-plus: ^1.0.0
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@latest
+  vitest: 5.0.3
+  esbuild: 0.28.2
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"
+verifyDepsBeforeRun: install
+minimumReleaseAgeExclude:
+  - "@oxc-minify/*"
+  - "@oxc-parser/*"
+  - "@oxc-project/*"
+  - "@oxfmt/*"
+  - "@oxlint-tsgolint/*"
+  - "@oxlint/*"
+  - "@rolldown/*"
+  - "@tsdown/*"
+  - "@vitejs/devtools"
+  - "@vitest/*"
+  - "@voidzero-dev/*"
+  - oxc-minify
+  - oxc-parser
+  - oxfmt
+  - oxlint
+  - oxlint-tsgolint
+  - rolldown
+  - tsdown
+  - vite
+  - vite-plus
+  - vitest
+  - void@0.10.8 || 0.27.0
+  - "@void/deploy-cloudflare@0.27.0"
+  - "@void/deploy-core@0.27.0"
+  - "@void/edge@0.27.0"
+  - "@void/isr@0.27.0"
+  - "@void/platform@0.27.0"

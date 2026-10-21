@@ -1,0 +1,12 @@
+PackageIdentifier: ManvanKaliber.icli
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: ManvanKaliber
+PackageName: iCLI
+ShortDescription: Agent-friendly command-line interface for iCloud Calendar, Mail, and Contacts
+License: MIT
+LicenseUrl: https://github.com/manvankaliber/icli/blob/main/LICENSE
+PackageUrl: https://github.com/manvankaliber/icli
+ReleaseNotesUrl: https://github.com/manvankaliber/icli/releases/tag/v0.1.0
+ManifestType: defaultLocale
+ManifestVersion: 1.12.0

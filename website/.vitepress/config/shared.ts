@@ -1,0 +1,220 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { HeadConfig } from "vitepress";
+import type { MarkdownEnv, UserConfig } from "vitepress";
+import { groupIconMdPlugin, groupIconVitePlugin } from "vitepress-plugin-group-icons";
+import { wgslVitePlugin } from "vgpu/client";
+import { ruleHowToUseMdPlugin } from "../plugins/ruleHowToUse";
+import llmstxt from "vitepress-plugin-llms";
+import BLOG_SIDEBAR from "../sidebar.blog.json" with { type: "json" };
+
+type AsyncMarkdownRenderer = {
+  renderAsync(src: string, env?: MarkdownEnv): Promise<string>;
+};
+
+const head: HeadConfig[] = [
+  [
+    "link",
+    { rel: "alternate", type: "text/plain", href: "/llms.txt", title: "iCLI agent documentation" },
+  ],
+  [
+    "link",
+    {
+      rel: "icon",
+      type: "image/svg+xml",
+      href: "/managing-logo.svg",
+    },
+  ],
+  // Open Graph
+  ["meta", { property: "og:site_name", content: "managing.software" }],
+  [
+    "meta",
+    {
+      property: "og:image",
+      content: "https://managing.software/managing-og.svg",
+    },
+  ],
+  // Twitter (X)
+  ["meta", { name: "twitter:site", content: "managing.software" }],
+  ["meta", { name: "twitter:card", content: "summary_large_image" }],
+  [
+    "meta",
+    {
+      name: "twitter:image",
+      content: "https://managing.software/managing-og.svg",
+    },
+  ],
+];
+
+export const sharedConfig = {
+  srcDir: "src",
+  srcExclude: [],
+  outDir: "build",
+  base: "/",
+  head,
+  lastUpdated: false,
+  transformPageData(pageData) {
+    pageData.frontmatter.head ??= [];
+
+    if (pageData.frontmatter.canonical) {
+      pageData.frontmatter.head.push([
+        "link",
+        {
+          rel: "canonical",
+          href: pageData.frontmatter.canonical,
+        },
+      ]);
+    }
+
+    // Add page-specific Open Graph and Twitter meta tags
+    const title = pageData.frontmatter.title || pageData.title;
+    const description =
+      pageData.frontmatter.description ||
+      pageData.description ||
+      "A collection of high-performance JavaScript tools written in Rust";
+
+    // Construct the canonical URL for the page
+    let url = "https://managing.software";
+    if (pageData.relativePath !== "index.md") {
+      const path = pageData.relativePath.replace(/\.md$/, ".html").replace(/\/index\.html$/, "/");
+      if (path !== "index.html") {
+        url += "/" + path.replace(/^\/+/, "");
+      }
+    }
+
+    if (title) {
+      pageData.frontmatter.head.push(["meta", { property: "og:title", content: title }]);
+      pageData.frontmatter.head.push(["meta", { name: "twitter:title", content: title }]);
+    }
+
+    if (description) {
+      pageData.frontmatter.head.push([
+        "meta",
+        { property: "og:description", content: description },
+      ]);
+      pageData.frontmatter.head.push([
+        "meta",
+        { name: "twitter:description", content: description },
+      ]);
+    }
+
+    pageData.frontmatter.head.push(["meta", { property: "og:url", content: url }]);
+  },
+  themeConfig: {
+    variant: "oxc",
+
+    siteTitle: "managing.software",
+    logo: "/managing-logo.svg",
+    search: {
+      provider: "local",
+      options: {
+        async _render(src: string, env: MarkdownEnv, md: AsyncMarkdownRenderer) {
+          let html = await md.renderAsync(src, env);
+          // Filter out pages with `search: false` in the frontmatter.
+          if (env.frontmatter?.search === false) {
+            return "";
+          }
+
+          // Always prefer `frontmatter.title` as the H1 in the search index when set,
+          // so the breadcrumb reflects the canonical page title (including product context).
+          if (env.frontmatter?.title) {
+            const title = (env.frontmatter as any).title;
+            // Pages without a markdown H1 (e.g., auto-generated rule pages): inject one.
+            if (!env.title) {
+              return (await md.renderAsync(`# ${title}`)) + html;
+            }
+            // Pages with their own H1: replace it in the indexed source so the
+            // search section title comes from frontmatter.title.
+            const prepared = src.replace(/^# .+$/m, `# ${title}`);
+            return await md.renderAsync(prepared, env);
+          }
+          return html;
+        },
+      },
+    },
+    socialLinks: [{ icon: "github", link: "https://github.com/manvankaliber/icli" }],
+    lastUpdated: {
+      formatOptions: {
+        dateStyle: "full",
+      },
+    },
+    footer: {
+      copyright: `managing.software contributors, ${new Date().getFullYear()}.`,
+      nav: [
+        {
+          title: "managing.software",
+          items: [
+            { text: "Guide", link: "/docs/guide/introduction" },
+            { text: "Learn", link: "/docs/learn/parser_in_rust/intro" },
+            { text: "Contribute", link: "/docs/contribute/introduction" },
+            { text: "iCloud CLI", link: "/#feature-parser" },
+          ],
+        },
+        {
+          title: "Tools",
+          items: [
+            { text: "Linter", link: "/docs/guide/usage/linter" },
+            { text: "Formatter", link: "/docs/guide/usage/formatter" },
+            { text: "iCLI", link: "/#feature-parser" },
+            { text: "Transformer", link: "/docs/guide/usage/transformer" },
+            { text: "Minifier", link: "/docs/guide/usage/minifier" },
+            { text: "Resolver", link: "/docs/guide/usage/resolver" },
+          ],
+        },
+        {
+          title: "Resources",
+          items: [
+            { text: "Blog", link: BLOG_SIDEBAR[0].link },
+            { text: "Team", link: "/team" },
+          ],
+        },
+        /*{
+          title: "Legal",
+          items: [
+            { text: "Terms & Conditions", link: "https://voidzero.dev/terms" },
+            { text: "Privacy Policy", link: "https://voidzero.dev/privacy" },
+            { text: "Cookie Policy", link: "https://voidzero.dev/cookies" },
+          ],
+        },*/
+      ],
+      social: [{ icon: "github", link: "https://github.com/manvankaliber/icli" }],
+    },
+  },
+  markdown: {
+    config(md) {
+      md.use(ruleHowToUseMdPlugin);
+      md.use(groupIconMdPlugin);
+    },
+  },
+  vite: {
+    publicDir: resolve(dirname(fileURLToPath(import.meta.url)), "../../public"),
+    build: {
+      chunkSizeWarningLimit: 3000,
+    },
+    optimizeDeps: {
+      exclude: ["@docsearch/css"],
+    },
+    plugins: [
+      groupIconVitePlugin(),
+      llmstxt({
+        domain: "https://managing.software",
+        generateLLMsTxt: false,
+        generateLLMsFullTxt: false,
+        injectLLMHint: false,
+      }),
+      wgslVitePlugin(),
+    ],
+    resolve: {
+      alias: [
+        {
+          find: "@constants",
+          replacement: resolve(dirname(fileURLToPath(import.meta.url)), "../theme/constants"),
+        },
+        {
+          find: "@data",
+          replacement: resolve(dirname(fileURLToPath(import.meta.url)), "../data"),
+        },
+      ],
+    },
+  },
+} as UserConfig;

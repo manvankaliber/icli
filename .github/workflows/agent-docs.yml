@@ -1,0 +1,31 @@
+name: Agent documentation
+
+on:
+  pull_request:
+    paths:
+      - AGENT_GUIDE.md
+      - skills/**
+      - scripts/sync-agent-docs.mjs
+      - website/public/llms.txt
+      - website/src/docs/guide/usage/icloud-cli/agent-guide.md
+      - .github/workflows/agent-docs.yml
+  push:
+    branches: [main]
+    paths:
+      - AGENT_GUIDE.md
+      - skills/**
+      - scripts/sync-agent-docs.mjs
+      - website/public/llms.txt
+      - website/src/docs/guide/usage/icloud-cli/agent-guide.md
+      - .github/workflows/agent-docs.yml
+
+permissions:
+  contents: read
+
+jobs:
+  generated-instructions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check portable skill guides and website discovery documents
+        run: node scripts/sync-agent-docs.mjs --check

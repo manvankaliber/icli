@@ -1,0 +1,62 @@
+[
+  {
+    "text": "React Compiler Support",
+    "link": "/blog/2026-08-18-react-compiler-support"
+  },
+  {
+    "text": "Type-Aware Linting Stable",
+    "link": "/blog/2026-07-22-type-aware-linting-stable"
+  },
+  {
+    "text": "Oxlint JS Plugins Alpha",
+    "link": "/blog/2026-03-11-oxlint-js-plugins-alpha"
+  },
+  {
+    "text": "Oxfmt Beta",
+    "link": "/blog/2026-02-24-oxfmt-beta"
+  },
+  {
+    "text": "Type-Aware Linting Alpha",
+    "link": "/blog/2025-12-08-type-aware-alpha"
+  },
+  {
+    "text": "Oxfmt Alpha",
+    "link": "/blog/2025-12-01-oxfmt-alpha"
+  },
+  {
+    "text": "Oxlint JS Plugins Preview",
+    "link": "/blog/2025-10-09-oxlint-js-plugins"
+  },
+  {
+    "text": "Oxlint Type-Aware Preview",
+    "link": "/blog/2025-08-17-oxlint-type-aware"
+  },
+  {
+    "text": "Oxlint v1.0 Stable",
+    "link": "/blog/2025-06-10-oxlint-stable"
+  },
+  {
+    "text": "Oxlint Beta",
+    "link": "/blog/2025-03-15-oxlint-beta"
+  },
+  {
+    "text": "Minifier Alpha",
+    "link": "/blog/2025-03-13-minifier-alpha"
+  },
+  {
+    "text": "Oxlint v0.10 Release",
+    "link": "/blog/2024-10-18-oxlint-v0.10-release"
+  },
+  {
+    "text": "Transformer Alpha",
+    "link": "/blog/2024-09-29-transformer-alpha"
+  },
+  {
+    "text": "Oxlint Import Plugin Alpha",
+    "link": "/blog/2024-05-04-import-plugin-alpha"
+  },
+  {
+    "text": "Oxlint General Availability",
+    "link": "/blog/2023-12-12-announcing-oxlint"
+  }
+]

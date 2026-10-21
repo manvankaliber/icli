@@ -1,0 +1,411 @@
+import BLOG_SIDEBAR from "../sidebar.blog.json" with { type: "json" };
+import { defineLocaleConfig } from "./utils";
+
+const TITLE = "managing.software";
+const DESCRIPTION = "Practical tools for managing your digital life.";
+
+export const enConfig = defineLocaleConfig("root", {
+  label: "English",
+  lang: "en",
+  title: TITLE,
+  titleTemplate: `:title | ${TITLE}`,
+  description: DESCRIPTION,
+  themeConfig: {
+    nav: [
+      { text: "iCloud CLI guide", link: "/docs/guide/usage/icloud-cli" },
+      {
+        text: "Tools",
+        items: [
+          { text: "Linter", link: "/#feature-linter" },
+          { text: "Formatter", link: "/#feature-formatter" },
+          { text: "iCLI", link: "/#feature-parser" },
+          { text: "Transformer", link: "/#feature-transformer" },
+          { text: "Resolver", link: "/#feature-resolver" },
+          { text: "Minifier", link: "/#feature-minifier" },
+        ],
+      },
+      { text: "iCLI", link: "/#feature-parser" },
+    ],
+    sidebar: {
+      "/docs/guide/": [
+        {
+          text: "iCloud CLI",
+          collapsed: false,
+          items: [
+            { text: "Overview", link: "/docs/guide/usage/icloud-cli" },
+            { text: "Agent guide", link: "/docs/guide/usage/icloud-cli/agent-guide" },
+            { text: "Agent skills", link: "/docs/guide/usage/icloud-cli/skills" },
+            { text: "Getting started", link: "/docs/guide/usage/icloud-cli/getting-started" },
+            { text: "Update iCLI", link: "/docs/guide/usage/icloud-cli/updating" },
+            {
+              text: "Account and output settings",
+              link: "/docs/guide/usage/icloud-cli/account-and-output",
+            },
+            { text: "Calendar", link: "/docs/guide/usage/icloud-cli/calendar" },
+            { text: "Contacts", link: "/docs/guide/usage/icloud-cli/contacts" },
+            { text: "Mail", link: "/docs/guide/usage/icloud-cli/mail" },
+            { text: "Errors and recovery", link: "/docs/guide/usage/icloud-cli/recovery" },
+          ],
+        },
+        {
+          text: "Introduction",
+          collapsed: false,
+          items: [
+            { text: "What is Oxc?", link: "/docs/guide/what-is-oxc" },
+            { text: "Getting Started", link: "/docs/guide/introduction" },
+          ],
+        },
+        {
+          text: "Oxlint",
+          collapsed: true,
+          link: "/docs/guide/usage/linter",
+          items: [
+            { text: "Overview", link: "/docs/guide/usage/linter" },
+            {
+              text: "Configure and integrate",
+              items: [
+                { text: "Quickstart", link: "/docs/guide/usage/linter/quickstart" },
+                { text: "Configuration", link: "/docs/guide/usage/linter/config" },
+                { text: "Coding agents", link: "/docs/guide/usage/coding-agents" },
+                { text: "Editor setup", link: "/docs/guide/usage/linter/editors" },
+                { text: "CI & other setup", link: "/docs/guide/usage/linter/ci" },
+                {
+                  text: "Nested configs",
+                  link: "/docs/guide/usage/linter/nested-config",
+                },
+              ],
+            },
+            {
+              text: "Features",
+              items: [
+                { text: "Built-in plugins", link: "/docs/guide/usage/linter/plugins" },
+                { text: "Automatic fixes", link: "/docs/guide/usage/linter/automatic-fixes" },
+                { text: "Ignore files", link: "/docs/guide/usage/linter/ignore-files" },
+                {
+                  text: "Inline ignore comments",
+                  link: "/docs/guide/usage/linter/ignore-comments",
+                },
+                {
+                  text: "Multi-file analysis",
+                  link: "/docs/guide/usage/linter/multi-file-analysis",
+                },
+                {
+                  text: "Output formats",
+                  link: "/docs/guide/usage/linter/output-formats",
+                },
+                { text: "Type-aware linting", link: "/docs/guide/usage/linter/type-aware" },
+                { text: "JS plugins", link: "/docs/guide/usage/linter/js-plugins" },
+                { text: "Writing JS plugins", link: "/docs/guide/usage/linter/writing-js-plugins" },
+              ],
+            },
+            {
+              text: "Migration",
+              items: [
+                { text: "From ESLint", link: "/docs/guide/usage/linter/migrate-from-eslint" },
+                // { text: "From Biome", link: "/docs/guide/usage/linter/migrate-from-biome" },
+              ],
+            },
+            {
+              text: "Reference",
+              items: [
+                { text: "Rules reference", link: "/docs/guide/usage/linter/rules" },
+                { text: "CLI reference", link: "/docs/guide/usage/linter/cli" },
+                {
+                  text: "Config file reference",
+                  link: "/docs/guide/usage/linter/config-file-reference",
+                },
+                {
+                  text: "LSP config reference",
+                  link: "/docs/guide/usage/linter/lsp-config-reference",
+                },
+                { text: "Versioning", link: "/docs/guide/usage/linter/versioning" },
+              ],
+            },
+          ],
+        },
+        {
+          text: "Oxfmt",
+          collapsed: true,
+          link: "/docs/guide/usage/formatter",
+          items: [
+            {
+              text: "Overview",
+              link: "/docs/guide/usage/formatter",
+            },
+            {
+              text: "Configure and integrate",
+              items: [
+                {
+                  text: "Quickstart",
+                  link: "/docs/guide/usage/formatter/quickstart",
+                },
+                {
+                  text: "Configuration",
+                  link: "/docs/guide/usage/formatter/config",
+                },
+                { text: "Coding agents", link: "/docs/guide/usage/coding-agents" },
+                { text: "Editor setup", link: "/docs/guide/usage/formatter/editors" },
+                { text: "CI & other setup", link: "/docs/guide/usage/formatter/ci" },
+              ],
+            },
+            {
+              text: "Features",
+              items: [
+                {
+                  text: "Ignore files",
+                  link: "/docs/guide/usage/formatter/ignore-files",
+                },
+                {
+                  text: "Inline ignore comments",
+                  link: "/docs/guide/usage/formatter/ignore-comments",
+                },
+                {
+                  text: "Sorting",
+                  link: "/docs/guide/usage/formatter/sorting",
+                },
+                {
+                  text: "Embedded formatting",
+                  link: "/docs/guide/usage/formatter/embedded-formatting",
+                },
+              ],
+            },
+            {
+              text: "Migration",
+              items: [
+                {
+                  text: "Migrate from Prettier",
+                  link: "/docs/guide/usage/formatter/migrate-from-prettier",
+                },
+              ],
+            },
+            {
+              text: "Reference",
+              items: [
+                {
+                  text: "CLI reference",
+                  link: "/docs/guide/usage/formatter/cli",
+                },
+                {
+                  text: "Configuration file reference",
+                  link: "/docs/guide/usage/formatter/config-file-reference",
+                },
+                {
+                  text: "Language support",
+                  link: "/docs/guide/usage/formatter/language-support",
+                },
+                {
+                  text: "Unsupported features",
+                  link: "/docs/guide/usage/formatter/unsupported-features",
+                },
+              ],
+            },
+          ],
+        },
+        {
+          text: "Parser",
+          collapsed: true,
+          link: "/docs/guide/usage/parser",
+          items: [{ text: "Overview", link: "/docs/guide/usage/parser" }],
+        },
+        {
+          text: "Transformer",
+          collapsed: true,
+          link: "/docs/guide/usage/transformer",
+          items: [
+            { text: "Overview", link: "/docs/guide/usage/transformer" },
+            {
+              text: "Lowering",
+              link: "/docs/guide/usage/transformer/lowering",
+            },
+            {
+              text: "TypeScript",
+              link: "/docs/guide/usage/transformer/typescript",
+            },
+            {
+              text: "JSX",
+              link: "/docs/guide/usage/transformer/jsx",
+            },
+            {
+              text: "React Compiler",
+              link: "/docs/guide/usage/transformer/react-compiler",
+            },
+            {
+              text: "Plugins",
+              link: "/docs/guide/usage/transformer/plugins",
+            },
+            {
+              text: "Global Variable Replacement",
+              link: "/docs/guide/usage/transformer/global-variable-replacement",
+            },
+            {
+              text: "Isolated Declarations",
+              link: "/docs/guide/usage/transformer/isolated-declarations",
+            },
+          ],
+        },
+        {
+          text: "Minifier",
+          collapsed: true,
+          link: "/docs/guide/usage/minifier",
+          items: [
+            {
+              text: "Overview",
+              link: "/docs/guide/usage/minifier",
+            },
+            {
+              text: "Dead Code Elimination",
+              link: "/docs/guide/usage/minifier/dead-code-elimination",
+            },
+            {
+              text: "Syntax Normalization",
+              link: "/docs/guide/usage/minifier/syntax-normalization",
+            },
+            {
+              text: "Mangling",
+              link: "/docs/guide/usage/minifier/mangling",
+            },
+            {
+              text: "Code Generation",
+              link: "/docs/guide/usage/minifier/codegen",
+            },
+            {
+              text: "FAQ",
+              link: "/docs/guide/usage/minifier/faq",
+            },
+          ],
+        },
+        {
+          text: "Resolver",
+          collapsed: true,
+          link: "/docs/guide/usage/resolver",
+          items: [{ text: "Overview", link: "/docs/guide/usage/resolver" }],
+        },
+        {
+          text: "TypeScript Runner",
+          collapsed: true,
+          link: "/docs/guide/usage/oxc-node",
+          items: [{ text: "Overview", link: "/docs/guide/usage/oxc-node" }],
+        },
+        {
+          text: "Resources",
+          collapsed: false,
+          items: [
+            { text: "Troubleshooting", link: "/docs/guide/troubleshooting" },
+            { text: "Benchmarks", link: "/docs/guide/benchmarks" },
+            { text: "Projects using Oxc", link: "/docs/guide/projects" },
+            { text: "Talks & media", link: "/docs/guide/media" },
+          ],
+        },
+      ],
+      "/docs/learn/": [
+        {
+          text: "JavaScript Parser in Rust",
+          items: [
+            { text: "Introduction", link: "/docs/learn/parser_in_rust/intro" },
+            { text: "Lexer", link: "/docs/learn/parser_in_rust/lexer" },
+            { text: "AST", link: "/docs/learn/parser_in_rust/ast" },
+            { text: "Parser", link: "/docs/learn/parser_in_rust/parser" },
+            { text: "Errors", link: "/docs/learn/parser_in_rust/errors" },
+            { text: "Semantic Analysis", link: "/docs/learn/parser_in_rust/semantic_analysis" },
+          ],
+        },
+        {
+          text: "Architecture",
+          items: [
+            {
+              text: "Parser",
+              link: "/docs/learn/architecture/parser",
+            },
+            {
+              text: "Linter",
+              link: "/docs/learn/architecture/linter",
+            },
+            {
+              text: "Test Infrastructure",
+              link: "/docs/learn/architecture/test",
+            },
+            {
+              text: "AST Tools",
+              link: "/docs/learn/architecture/ast-tools",
+            },
+          ],
+        },
+        {
+          text: "ECMAScript",
+          items: [
+            { text: "Specification", link: "/docs/learn/ecmascript/spec" },
+            {
+              text: "Grammar",
+              link: "/docs/learn/ecmascript/grammar",
+            },
+          ],
+        },
+        { text: "Performance", link: "/docs/learn/performance" },
+        { text: "Terminology", link: "/docs/learn/terminology" },
+        { text: "References", link: "/docs/learn/references" },
+      ],
+      "/docs/contribute/": [
+        {
+          text: "Contribute",
+          items: [
+            { text: "Introduction", link: "/docs/contribute/introduction" },
+            { text: "Getting Started", link: "/docs/contribute/development" },
+          ],
+        },
+        {
+          text: "Tools",
+          items: [
+            {
+              text: "Parser",
+              link: "/docs/contribute/parser",
+              items: [
+                {
+                  text: "AST",
+                  link: "/docs/contribute/parser/ast",
+                },
+              ],
+            },
+            {
+              text: "Linter",
+              link: "/docs/contribute/linter",
+              items: [{ text: "Adding Rules", link: "/docs/contribute/linter/adding-rules" }],
+            },
+            { text: "Formatter", link: "/docs/contribute/formatter" },
+            { text: "Resolver", link: "/docs/contribute/resolver" },
+            {
+              text: "Transformer",
+              link: "/docs/contribute/transformer",
+            },
+            { text: "Minifier", link: "/docs/contribute/minifier" },
+            { text: "Language Server", link: "/docs/contribute/language_server" },
+            { text: "VSCode", link: "/docs/contribute/vscode" },
+          ],
+        },
+        { text: "Debugging", link: "/docs/contribute/debugging" },
+        { text: "Profiling", link: "/docs/contribute/profiling" },
+        { text: "PR Rules and Policies", link: "/docs/contribute/rules" },
+        { text: "Security Policy", link: "/docs/contribute/security" },
+      ],
+      "/blog/": BLOG_SIDEBAR,
+    },
+    outline: {
+      level: [2, 3],
+    },
+    editLink: {
+      pattern({ filePath }) {
+        // Auto-generated rule pages should link to the Rust source in the oxc repo
+        const m = filePath.match(
+          /^docs\/guide\/usage\/linter\/rules\/(?<plugin>[^/]+)\/(?<rule>[^/]+)\.md$/,
+        );
+        if (m) {
+          const plugin = m.groups!.plugin;
+          const rule = m.groups!.rule.replaceAll("-", "_");
+          return `https://github.com/oxc-project/oxc/edit/main/crates/oxc_linter/src/rules/${plugin}/${rule}.rs`;
+        }
+
+        return `https://github.com/oxc-project/website/edit/main/src/${filePath}`;
+      },
+      text: "Suggest changes to this page",
+    },
+  },
+});

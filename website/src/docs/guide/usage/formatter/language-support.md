@@ -1,0 +1,70 @@
+---
+title: "Language support | Oxfmt"
+---
+
+# Language support
+
+Oxfmt formats a wide range of file types. Most are handled by Oxfmt's own **native** engine, written in Rust. The rest are delegated to a **bundled Prettier** for languages Oxfmt has not yet reimplemented natively. We are actively porting every language to Rust for maximum performance, so the Prettier-backed list keeps shrinking as native support lands.
+
+:::info
+Native formats run entirely in Rust with no Node.js round-trip, so they are the fastest. Prettier-backed formats ship inside the `oxfmt` package and need no extra setup. Except:
+
+- `.svelte` requires the `svelte` package to be installed and the [`svelte`](./config-file-reference#svelte) option to be enabled.
+- `.astro` requires the `@astrojs/compiler-rs` package to be installed and the [`astro`](./config-file-reference#astro) option to be enabled.
+
+:::
+
+## Native
+
+Formatted directly by Oxfmt, with no Prettier dependency:
+
+| Language             | Extensions                                    |
+| -------------------- | --------------------------------------------- |
+| JavaScript / JSX     | `.js`, `.jsx`, `.mjs`, `.cjs`, and more       |
+| TypeScript / TSX     | `.ts`, `.tsx`, `.mts`, `.cts`, `.d.ts`        |
+| JSON / JSONC / JSON5 | `.json`, `.jsonc`, `.json5`                   |
+| CSS / SCSS / Less    | `.css`, `.scss`, `.less`, `.pcss`, `.postcss` |
+| GraphQL              | `.graphql`, `.gql`, `.graphqls`               |
+| TOML                 | `.toml`                                       |
+| YAML                 | `.yml`, `.yaml`                               |
+| Markdown             | `.md`, `.markdown`                            |
+
+Detection also covers many well-known config files by name. For example `.babelrc` and `.swcrc` are treated as JSON.
+
+To format other files as a specific language (e.g. Angular templates named `*.html`), use [`associations`](./config#associations).
+
+## Prettier-backed
+
+Delegated to the bundled Prettier. No separate `prettier` install is required.
+
+:::warning
+These formats require Node.js and are only available with the `oxfmt` npm package. The standalone binary from GitHub Releases skips these files. See [Quickstart](./quickstart#install) for details.
+:::
+
+:::tip
+These are being actively ported to Rust. As each native formatter lands, its language moves to the [Native](#native) list above for maximum performance. No change needed on your side.
+:::
+
+| Language   | Extensions                |
+| ---------- | ------------------------- |
+| HTML       | `.html`, `.htm`, `.xhtml` |
+| Angular    | `*.component.html`        |
+| Vue        | `.vue`                    |
+| Svelte     | `.svelte`                 |
+| Astro      | `.astro`                  |
+| MDX        | `.mdx`                    |
+| Handlebars | `.hbs`, `.handlebars`     |
+| MJML       | `.mjml`                   |
+
+## Embedded languages
+
+Oxfmt also formats code embedded inside JS/TS template literals and Markdown code blocks.
+
+The same split as above applies: languages in the [Native](#native) list are formatted natively, while those in the [Prettier-backed](#prettier-backed) list go through Prettier. See [Embedded Formatting](./embedded-formatting) for details and examples.
+
+For `.vue` and `.svelte` files, embedded JS/TS (such as `<script>` blocks) is formatted by native formatter rather than Prettier. Embedded JS/TS in the other Prettier-backed formats (such as `<script>` tags in HTML) is still formatted by Prettier. This also applies to Vue and Svelte code embedded in other files (such as a `vue` code block in Markdown), since the whole block is delegated to Prettier.
+
+## See also
+
+- [Compatibility matrix](/compatibility): framework and file-type-level support at a glance
+- [Unsupported features](./unsupported-features)

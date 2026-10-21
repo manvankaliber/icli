@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "description": "Agent-friendly CLI for iCloud Calendar, Mail, and Contacts",
+  "homepage": "https://github.com/manvankaliber/icli",
+  "license": "MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/manvankaliber/icli/releases/download/v1.0.0/icli-v1.0.0-x86_64-pc-windows-msvc.zip",
+      "hash": "3c586ab37355addc5ca811401b9641063018e075aa0eef50f0ff656a8238764d"
+    },
+    "arm64": {
+      "url": "https://github.com/manvankaliber/icli/releases/download/v1.0.0/icli-v1.0.0-aarch64-pc-windows-msvc.zip",
+      "hash": "93148e8834087a84f3494ef314d64de85c2f62e671047e24e55c6778f8c797a7"
+    }
+  },
+  "bin": "icli.exe",
+  "checkver": {
+    "github": "https://github.com/manvankaliber/icli"
+  }
+}

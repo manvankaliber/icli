@@ -1,0 +1,371 @@
+---
+title: AST
+outline: deep
+---
+
+# Abstract Syntax Tree (AST)
+
+The Oxc AST is the foundation of all Oxc tools. Understanding its structure and how to work with it is essential for contributing to parser, linter, transformer, and other components.
+
+## AST Architecture
+
+### Design Principles
+
+The Oxc AST is designed with the following principles:
+
+1. **Performance First**: Optimized for speed and memory efficiency
+2. **Type Safety**: Leverages Rust's type system to prevent common errors
+3. **Spec Compliance**: Closely follows ECMAScript specification
+4. **Clear Semantics**: Removes ambiguity present in other AST formats
+
+## Working with the AST
+
+### Generate AST Related Code
+
+When you modify AST definitions, run the code generation tool:
+
+```bash
+just ast
+```
+
+This generates:
+
+- **Visitor patterns**: For traversing the AST
+- **Builder methods**: For constructing AST nodes
+- **Trait implementations**: For common operations
+- **TypeScript types**: For Node.js bindings
+
+### AST Node Structure
+
+Every AST node follows a consistent pattern:
+
+```rust
+#[ast(visit)]
+pub struct IdentifierReference<'a> {
+    pub node_id: Cell<NodeId>,
+    pub span: Span,
+    pub name: Ident<'a>,
+    pub reference_id: Cell<Option<ReferenceId>>,
+}
+```
+
+Key components:
+
+- **`span`**: Source location information
+- **`#[ast(visit)]`**: Generates visitor methods
+- **Lifetime `'a`**: References to arena-allocated memory
+
+### Memory Management
+
+The AST uses a memory arena for efficient allocation:
+
+```rust
+use oxc_allocator::Allocator;
+use oxc_parser::Parser;
+
+let allocator = Allocator::default();
+let parsed = Parser::new(&allocator, source_text, source_type).parse();
+let ast = parsed.program;
+```
+
+Benefits:
+
+- **Fast allocation**: No individual malloc calls
+- **Fast deallocation**: Drop entire arena at once
+- **Cache friendly**: Linear memory layout
+- **No reference counting**: Simple lifetime management
+
+## AST Traversal
+
+### Visitor Pattern
+
+Use the generated visitor for AST traversal:
+
+```rust
+use oxc_ast::ast::Function;
+use oxc_ast_visit::{Visit, walk};
+use oxc_syntax::scope::ScopeFlags;
+
+struct MyVisitor;
+
+impl<'a> Visit<'a> for MyVisitor {
+    fn visit_function(&mut self, func: &Function<'a>, flags: ScopeFlags) {
+        if func.is_function_declaration() {
+            println!("Found function: {:?}", func.id);
+        }
+        walk::walk_function(self, func, flags);
+    }
+}
+
+// Usage
+let mut visitor = MyVisitor;
+visitor.visit_program(&program);
+```
+
+### Mutable Visitor
+
+`VisitMut` can be used to modify the AST during traversal.
+
+For example, to transform binary addition of string literals into a single string literal:
+
+```rust
+use oxc_ast::{
+    ast::{BinaryOperator, Expression},
+    builder::AstBuilder,
+};
+use oxc_ast_visit::{VisitMut, walk_mut};
+use oxc_span::SPAN;
+use oxc_str::Str;
+
+struct MyTransformer<'a> {
+    builder: &'a AstBuilder<'a>,
+}
+
+impl<'a> VisitMut<'a> for MyTransformer<'a> {
+    fn visit_expression(&mut self, expr: &mut Expression<'a>) {
+        if let Expression::BinaryExpression(binary) = expr
+            && let (
+                BinaryOperator::Addition,
+                Expression::StringLiteral(left),
+                Expression::StringLiteral(right),
+            ) = (binary.operator, &binary.left, &binary.right)
+        {
+            let value = Str::from_strs_array_in(
+                [left.value.as_str(), right.value.as_str()],
+                self.builder,
+            );
+            *expr = Expression::new_string_literal(SPAN, value, None, self.builder);
+        }
+
+        walk_mut::walk_expression(self, expr);
+    }
+}
+```
+
+For example, to modify a binary expression without changing its type:
+
+```rust
+use oxc_ast::ast::{BinaryExpression, BinaryOperator};
+use oxc_ast_visit::{VisitMut, walk_mut};
+
+struct MyTransformer;
+
+impl<'a> VisitMut<'a> for MyTransformer {
+    fn visit_binary_expression(&mut self, expr: &mut BinaryExpression<'a>) {
+        if expr.operator == BinaryOperator::Addition {
+            // Modify expr.left, expr.right, or expr.operator.
+        }
+        walk_mut::walk_binary_expression(self, expr);
+    }
+}
+```
+
+## AST Construction
+
+### Builder Pattern
+
+Use the AST builder for creating nodes:
+
+```rust
+use oxc_ast::{
+    ast::{BinaryOperator, Expression},
+    builder::AstBuilder,
+};
+use oxc_span::SPAN;
+
+let ast = AstBuilder::new(&allocator);
+
+// Create a binary expression: a + b
+let left = Expression::new_identifier(SPAN, "a", &ast);
+let right = Expression::new_identifier(SPAN, "b", &ast);
+let expr = Expression::new_binary_expression(
+    SPAN,
+    left,
+    BinaryOperator::Addition,
+    right,
+    &ast,
+);
+```
+
+### Helper Functions
+
+Common patterns are provided as helpers:
+
+```rust
+use oxc_ast::{
+    ast::{Expression, NumberBase},
+    builder::AstBuilder,
+};
+use oxc_span::SPAN;
+
+let ast = AstBuilder::new(&allocator);
+let number = Expression::new_numeric_literal(
+    SPAN,
+    42.0,
+    None,
+    NumberBase::Decimal,
+    &ast,
+);
+```
+
+## Development Workflow
+
+### Adding New AST Nodes
+
+1. **Define the struct**:
+
+   ```rust
+   #[ast(visit)]
+   #[derive(Debug)]
+   #[generate_derive(CloneIn, Dummy, ReplaceWith, TakeIn)]
+   #[generate_derive(ContentEq, ESTree, GetSpan, GetSpanMut, UnstableAddress)]
+   pub struct MyNewNode<'a> {
+       pub node_id: Cell<NodeId>,
+       pub span: Span,
+       pub name: Ident<'a>,
+       pub value: Expression<'a>,
+   }
+   ```
+
+2. **Add to enum**:
+
+   ```rust
+   pub enum Statement<'a> {
+       // ... existing variants
+       MyNewStatement(Box<'a, MyNewNode<'a>>) = 18,
+   }
+   ```
+
+3. **Run code generation**:
+
+   ```bash
+   just ast
+   ```
+
+4. **Implement parsing logic**:
+   ```rust
+   impl<'a, C: ParserConfig> ParserImpl<'a, C> {
+       fn parse_my_new_statement(&mut self) -> Statement<'a> {
+           // Parsing implementation
+       }
+   }
+   ```
+
+## Comparing AST Formats
+
+### Use AST Explorer
+
+For comparing with other parsers, use [ast-explorer.dev](https://ast-explorer.dev):
+
+1. **Better UI**: Modern interface with syntax highlighting
+2. **Up-to-date**: Latest parser versions
+3. **Multiple parsers**: Compare Oxc, Babel, TypeScript, etc.
+4. **Export formats**: JSON, code generation
+
+## Performance Considerations
+
+### Memory Layout
+
+The AST is designed for cache efficiency:
+
+```rust
+// Good: Box large enum payloads
+pub enum Expression<'a> {
+    NumericLiteral(Box<'a, NumericLiteral<'a>>) = 2,
+    StringLiteral(Box<'a, StringLiteral<'a>>) = 5,
+    // ... other variants
+}
+
+// Avoid: Store large payloads inline
+pub enum LargeEnum {
+    Small,
+    Large { /* 200 bytes of data */ },
+}
+```
+
+### Arena Allocation
+
+All AST nodes are allocated in the arena:
+
+```rust
+let node = Expression::new_numeric_literal(
+    SPAN,
+    42.0,
+    None,
+    NumberBase::Decimal,
+    &ast,
+);
+```
+
+### Enum Size Testing
+
+We enforce small enum sizes:
+
+```rust
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn size_asserts() {
+    use std::mem::size_of;
+
+    assert_eq!(size_of::<Statement>(), 16);
+    assert_eq!(size_of::<Expression>(), 16);
+    assert_eq!(size_of::<Declaration>(), 16);
+}
+```
+
+## Advanced Topics
+
+### Custom AST Attributes
+
+Add custom attributes for specific tools:
+
+```rust
+#[ast(visit)]
+#[derive(Debug)]
+#[generate_derive(CloneIn, Dummy, ReplaceWith, TakeIn)]
+#[generate_derive(ContentEq, ESTree, GetSpan, GetSpanMut, UnstableAddress)]
+pub struct MyNode<'a> {
+    pub node_id: Cell<NodeId>,
+    pub span: Span,
+    #[estree(skip)]
+    pub internal_data: u32,
+    pub public_field: Str<'a>,
+}
+```
+
+### Integration with Semantic Analysis
+
+Link AST nodes with semantic information:
+
+```rust
+#[ast(visit)]
+pub struct IdentifierReference<'a> {
+    pub node_id: Cell<NodeId>,
+    pub span: Span,
+    pub name: Ident<'a>,
+    pub reference_id: Cell<Option<ReferenceId>>,
+}
+```
+
+This allows tools to access binding information, scope context, and type information during AST traversal.
+
+## Debugging Tips
+
+### Pretty Printing
+
+Use the debug formatter to inspect AST:
+
+```rust
+println!("{ast_node:#?}");
+```
+
+### Span Information
+
+Track source locations for error reporting:
+
+```rust
+use oxc_span::GetSpan;
+
+let span = node.span();
+println!("Error at {}:{}", span.start, span.end);
+```

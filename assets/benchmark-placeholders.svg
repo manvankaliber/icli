@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 968 148" role="img" aria-labelledby="title desc">
+<title id="title">Benchmark metrics awaiting measurement</title>
+<desc id="desc">All values are zero placeholders labeled TBD, not measured results.</desc>
+<style>
+:root{--surface:#fff;--ink:#17191d;--muted:#626a73;--line:#d8dce1;--tag:#eef0f3;--tagink:#626a73}
+@media(prefers-color-scheme:dark){:root{--surface:#151515;--ink:#f1f2f3;--muted:#a4a8ad;--line:#37393c;--tag:#292b2e;--tagink:#c2c6cb}}
+.tile{fill:var(--surface);stroke:var(--line);stroke-width:1}.label{font:600 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--ink)}
+.value{font:700 28px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--ink)}
+.tag{fill:var(--tag)}.tagtext{font:700 10px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--tagink);text-anchor:middle}
+.hint{font:400 9px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:var(--muted)}
+</style>
+<g transform="translate(0,12)">
+<rect class="tile" width="184" height="124" rx="15"/>
+<text class="label" x="14" y="27">Command latency</text>
+<text class="value" x="14" y="66">0 s</text>
+<rect class="tag" x="14" y="81" width="36" height="18" rx="9"/>
+<text class="tagtext" x="32" y="94">TBD</text>
+</g>
+<g transform="translate(196,12)">
+<rect class="tile" width="184" height="124" rx="15"/>
+<text class="label" x="14" y="27">Task time</text>
+<text class="value" x="14" y="66">0 s</text>
+<rect class="tag" x="14" y="81" width="36" height="18" rx="9"/>
+<text class="tagtext" x="32" y="94">TBD</text>
+</g>
+<g transform="translate(392,12)">
+<rect class="tile" width="184" height="124" rx="15"/>
+<text class="label" x="14" y="27">Model tokens</text>
+<text class="value" x="14" y="66">0</text>
+<rect class="tag" x="14" y="81" width="36" height="18" rx="9"/>
+<text class="tagtext" x="32" y="94">TBD</text>
+</g>
+<g transform="translate(588,12)">
+<rect class="tile" width="184" height="124" rx="15"/>
+<text class="label" x="14" y="27">Task success</text>
+<text class="value" x="14" y="66">0%</text>
+<rect class="tag" x="14" y="81" width="36" height="18" rx="9"/>
+<text class="tagtext" x="32" y="94">TBD</text>
+</g>
+<g transform="translate(784,12)">
+<rect class="tile" width="184" height="124" rx="15"/>
+<text class="label" x="14" y="27">Local resources</text>
+<text class="value" x="14" y="66">0</text>
+<rect class="tag" x="14" y="81" width="36" height="18" rx="9"/>
+<text class="tagtext" x="32" y="94">TBD</text>
+</g>
+</svg>
