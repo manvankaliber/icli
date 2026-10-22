@@ -39,7 +39,8 @@ On Windows PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/manvankaliber/icli/main/install.ps1')))
 ```
 
-Create an [Apple app-specific password](https://support.apple.com/en-us/102654), then add your account. iCLI asks for the password without displaying it and saves it in the operating system's credential store.
+Create an [Apple app-specific password](https://support.apple.com/en-us/102654), then add provide your credentials to iCLI using `icli auth add`. 
+iCLI saves your password in the operating system's credential store, so make sure that one is available.
 
 ```sh
 icli auth add you@icloud.com
@@ -49,7 +50,7 @@ icli contacts list
 icli mail list
 ```
 
-Update a release-installed executable with `icli update`; use `icli update --check` to see whether a newer stable release is available without downloading it. Source builds and package-managed installations should use their original update method. A successful update takes effect the next time you run iCLI.
+Update iCLI with `icli update`; use `icli update --check` to see whether a newer stable release is available without downloading it. Source builds and package-managed installations should use their original update method. A successful update takes effect the next time you run iCLI.
 
 Run for example `icli mail` or any other `icli <category>` to see their available operations; these commands show help without contacting iCloud. Use `icli <command> --help` for accepted options and side effects. Connect an agent through the [local MCP adapter](mcp/README.md). Repository guidance for coding agents is in [AGENTS.md](AGENTS.md).
 
