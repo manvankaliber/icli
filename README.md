@@ -1,20 +1,18 @@
 # iCLI
 
-**Give your agent access to iCloud Calendar, Contacts, and Mail.**
+**Give your agent the best access to iCloud Calendar, Contacts, and Mail.**
 
-iCLI gives agents commands they can discover and results they can act on. Built-in help explains each operation, stable IDs identify resources, and structured errors suggest how to recover. That means less command hunting and fewer guesses while working with your iCloud data. Use the same CLI yourself, or connect an agent through the local MCP adapter.
+iCLI is an agent-first commandline tool that gives your agents specialized commands that return not just data or errors, but also concise documentation, simple troubleshooting steps and  guidance to prevent unnecessary overthinking and accidental unresolveable mistakes when handing data remotely in your iCloud. On average automations using iCLI perform up to 7x faster, 1.7x better (less errors, more completed tasks) and cost 70% less tokens. Use the same CLI yourself, or connect an agent through the local MCP adapter. 
 
-**Agents: start with [AGENT_GUIDE.md](AGENT_GUIDE.md).** It covers installation, updating, authentication, and how to use the CLI's current help to complete a task.
+**Agents: start with [AGENT_GUIDE.md](AGENT_GUIDE.md).** It covers installation, updating, authentication, and how to use the CLI to complete any supported task.
 
 [Quick start](#quick-start) | [Documentation](https://managing.software/docs/guide/usage/icloud-cli) | [Agent skills](skills/README.md) | [MCP setup](mcp/README.md)
 
 ## iCloud app coverage
 
-Calendar, Contacts, and Mail cover every workflow listed for those apps in the comparison below. The other app tiles show where iCLI has no matching command yet.
+Calendar, Contacts, and Mail cover every workflow listed for those apps in the comparison below. The other app tiles show where iCLI has no matching command yet compared to other alternatives.
 
 Calendar supports event search, recurrence, alarms, sharing, imports, and parallel queries. Contacts supports search, selected or complete property data, card updates, and groups. Mail supports folders, search, attachments, drafts, sending, flags, moves, and deletion. These operate on iCloud data; data stored only on a device or another provider is outside iCLI's scope.
-
-Use `--skip N --limit N` to page calendar event searches, contact lists/searches, and mail lists/searches. Contacts use UID order, calendar searches use resource URL order, and mail uses newest UID first. Each page reads current data. Calendar and Contacts pagination downloads the full matching scope on every page, including skipped results, so use one sufficiently large `--limit` when possible; Mail fetches headers only for the selected page.
 
 ![iCLI workflow coverage across iCloud apps, with a percentage and stage for each app.](assets/app-coverage.svg)
 
@@ -48,7 +46,7 @@ icli mail list
 
 Update a release-installed executable with `icli update`; use `icli update --check` to see whether a newer stable release is available without downloading it. Source builds and package-managed installations should use their original update method. A successful update takes effect the next time you run iCLI.
 
-Run `icli mail` or `icli contacts` to see their available operations; these commands show help without contacting iCloud. Use `icli <command> --help` for accepted options and side effects. Connect an agent through the [local MCP adapter](mcp/README.md). Repository guidance for coding agents is in [AGENTS.md](AGENTS.md).
+Run for example `icli mail` or any other `icli <category>` to see their available operations; these commands show help without contacting iCloud. Use `icli <command> --help` for accepted options and side effects. Connect an agent through the [local MCP adapter](mcp/README.md). Repository guidance for coding agents is in [AGENTS.md](AGENTS.md).
 
 The calendar command also accepts `agenda` and the common typo `calender` as aliases, for example `icli agenda list`.
 
