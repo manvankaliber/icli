@@ -2,7 +2,11 @@
 
 **Give your agent the best access to iCloud Calendar, Contacts, and Mail.**
 
-iCLI is an agent-first commandline tool that gives your agents specialized commands that return not just data or errors, but also concise documentation, simple troubleshooting steps and  guidance to prevent unnecessary overthinking and accidental unresolveable mistakes when handing data remotely in your iCloud. On average automations using iCLI perform up to 7x faster, 1.7x better (less errors, more completed tasks) and cost 70% less tokens. Use the same CLI yourself, or connect an agent through the local MCP adapter. 
+iCLI is a blazingly fast agent-first commandline tool written in Rust that gives your agents specialized commands that return not just data or errors, but also concise documentation, simple troubleshooting steps and proper guidance to prevent any unnecessary overthinking and easy to make mistakes when handing data remotely in your iCloud. You can reschedule your whole calendar, and mail a summary of all changes to all your contacts for little to no token spend, in minutes instead of hours.
+
+On average automations using iCLI perform **up to 7x faster**, **1.7x better** (less errors, more completed tasks) and **cost 70% less** to run when compared to Computer Use, Browser Use, pycloud and similar, or abusing other existing interfaces. It can bulk update calendars thanks to its smart concurrency mode (enabled by default) which handles iCloud platform specific conditions that cause random errors and protocols oddities for you with ease.
+
+Use the same CLI yourself, or connect an agent through the local MCP adapter. 
 
 **Agents: start with [AGENT_GUIDE.md](AGENT_GUIDE.md).** It covers installation, updating, authentication, and how to use the CLI to complete any supported task.
 
