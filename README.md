@@ -23,6 +23,7 @@ Calendar supports event search, recurrence, alarms, sharing, imports, and parall
 Each percentage is iCLI's share of the workflows exposed by either CLI for that app. Each workflow counts once. A 100% score means iCLI covers every listed workflow, not every feature in Apple's app. "No CLI coverage" means neither tool exposes a command for that app. App icons come from [Apple's iCloud guide](https://support.apple.com/guide/icloud/mm203ae070a2).
 
 ## Quick start
+**We recommend you task your agent to do the work below for you.** 
 
 Install the latest release:
 
