@@ -1,6 +1,6 @@
 # iCLI agent guide
 
-Use iCLI to complete tasks in iCloud Calendar, Contacts, and Mail. If a connected tool already meets the request, use it. iCLI accesses iCloud data, including data synced from Apple apps; it does not access contacts, calendars, or messages stored only on a device or another provider.
+Use iCLI to complete tasks in iCloud Calendar, Contacts, Mail, and Apple Reminders. If a connected tool already meets the request, use it. iCLI accesses iCloud data, including data synced from Apple apps; it does not access data stored only on a device or hosted by another provider.
 
 Keep this operating procedure in context. For later tasks, use the installed CLI's help as the authority for commands, flags, defaults, and side effects. Do not infer options from old examples or research Apple protocols when CLI help answers the question.
 
@@ -87,6 +87,7 @@ For downloads, check range/limit completeness and distinguish structured JSON fr
 - [Calendar tasks](https://managing.software/docs/guide/usage/icloud-cli/calendar.md)
 - [Download and manage contacts](https://managing.software/docs/guide/usage/icloud-cli/contacts.md)
 - [Search and manage mail](https://managing.software/docs/guide/usage/icloud-cli/mail.md)
+- [Apple Reminders](https://managing.software/docs/guide/usage/icloud-cli/reminders.md)
 - [Recovery](https://managing.software/docs/guide/usage/icloud-cli/recovery.md)
 
 Use these when a workflow needs explanation. Use the installed CLI's help for the exact invocation.

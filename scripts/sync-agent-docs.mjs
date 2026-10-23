@@ -7,7 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const check = process.argv.includes('--check');
 const guide = readFileSync(resolve(root, 'AGENT_GUIDE.md'), 'utf8').replaceAll('\r\n', '\n');
 const files = new Map();
-for (const skill of ['icloud', 'icloud-calendar', 'icloud-contacts', 'icloud-mail']) {
+for (const skill of ['icloud', 'icloud-calendar', 'icloud-contacts', 'icloud-mail', 'icloud-reminders']) {
   files.set(`skills/${skill}/references/agent-guide.md`, guide);
 }
 files.set('website/src/docs/guide/usage/icloud-cli/agent-guide.md',
@@ -37,7 +37,7 @@ Start with the agent guide. Before the first iCLI task in a session, update a re
 
 ## Optional integrations
 
-- [Four standalone iCloud skills](https://github.com/manvankaliber/icli/tree/main/skills): install one app skill or the four-skill bundle.
+- [Five standalone iCloud skills](https://github.com/manvankaliber/icli/tree/main/skills): install one app skill or the five-skill bundle.
 - [Local MCP adapter](https://github.com/manvankaliber/icli/blob/main/mcp/README.md): tools discovered from installed CLI help.
 
 The linked pages are Markdown versions of the website documentation. iCLI operates on iCloud-hosted data, not device-only data, iCloud Drive, or Photos. Structured JSON downloads are not native VCF, ICS, or mailbox archives. The installed CLI's help is authoritative; this index is navigation, not a complete command reference.

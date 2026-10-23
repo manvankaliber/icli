@@ -9,6 +9,10 @@ Apple Reminders is separate from Calendar events. iCLI connects to Apple's
 private CloudKit Reminders service with a saved Apple Account session. Calendar,
 Contacts, and Mail continue to use app-specific passwords.
 
+The CLI reads Reminders lists but does not create, rename, or delete list
+records. Commands use the saved default account, or the sole configured
+account. Pass `--email EMAIL` to select another configured account.
+
 ## Sign in
 
 Start sign-in and submit Apple's code separately:
@@ -37,10 +41,11 @@ icli reminders snapshot --list LIST_ID
 
 List results include stable IDs. Reminder reads return active and completed
 items, with list, due date, notes, flags, priority, and related record IDs where
-available. `list` defaults to 100 rows; use `--skip` and `--limit` to page.
-Snapshots include reminders and related alarms, triggers, attachments,
-hashtags, and recurrence rules. The snapshot limit applies per record type;
-`truncated_types` names any arrays capped by that limit.
+available. `list` defaults to 100 rows; follow `next_steps` and keep the account
+scope unchanged when paging with `--skip` and `--limit`. Snapshots include
+reminders and related alarms, triggers, attachments, hashtags, and recurrence
+rules. The snapshot limit applies per record type; `truncated_types` names any
+arrays capped by that limit.
 
 ## Create and edit reminders
 
@@ -52,9 +57,13 @@ icli reminders set-status REMINDER_ID completed
 icli reminders delete REMINDER_ID --yes
 ```
 
-Due dates accept `YYYY-MM-DD` or RFC3339 date-times. Updates change only the
-fields supplied. Deletes set Apple's deleted marker so sync clients can process
-the change; `--yes` is required for remote deletion.
+Due dates accept `YYYY-MM-DD` or RFC3339 date-times. All-day dates are
+interpreted at UTC midnight. Create supports priority 0 through 9 and a flagged
+state. Updates change only the fields supplied; use `--clear-due` to remove a
+due date or `--all-day true|false` to change its all-day status. Completion can
+be set with `set-status` or the update command's `--completed` option. Deletes
+set Apple's deleted marker so sync clients can process the change; `--yes` is
+required for remote deletion.
 
 ## Related records
 
@@ -68,11 +77,14 @@ icli reminders attachment create-url REMINDER_ID --url https://example.com
 icli reminders recurrence create REMINDER_ID --frequency weekly --interval 1
 ```
 
+The available alarm commands list alarms and add a location alarm. Location
+alarms use latitude, longitude, radius, and arrival or departure proximity.
 Hashtags, URL attachments, and recurrence rules have `list`, `create`, `update`,
-and `delete` subcommands. Deletes require `--yes`. URL attachment commands
-manage links, not uploaded files. Location alarms use latitude, longitude,
-radius, and arrival or departure proximity. Recurrence frequency is daily,
-weekly, monthly, or yearly.
+and `delete` subcommands. Hashtag names omit the leading `#`. URL attachment
+commands manage links, not uploaded files. Recurrence frequency is daily,
+weekly, monthly, or yearly; `--interval` sets how many frequency units to wait,
+and an occurrence count of zero means no fixed count. Related-record deletes
+also require `--yes`.
 
 ## Incremental sync
 
@@ -81,9 +93,10 @@ icli reminders sync-cursor
 icli reminders changes --since CURSOR
 ```
 
-Save the returned opaque cursor and use it for the next `changes` request. If
-`more_available` is true, call again with the cursor returned by that response.
-Do not edit or interpret cursors.
+Save the opaque cursor from `sync-cursor` and pass it unchanged as `--since` to
+`changes`. Keep the same account between calls. After each response, save its
+returned cursor. If `more_available` is true, call again with that cursor. Do
+not edit or interpret cursors.
 
 The private Apple interfaces may change. Use `icli reminders --help` and each
 subcommand's `--help` for the behavior supported by the installed build.

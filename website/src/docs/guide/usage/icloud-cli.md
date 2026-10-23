@@ -14,7 +14,7 @@ results, and recovery instructions for agents and shell scripts.
 **Using an agent? Start with the [agent guide](./icloud-cli/agent-guide).**
 It covers installation, updating, private authentication, and how to discover
 the right command from the installed CLI. [Standalone skills](./icloud-cli/skills)
-provide the same setup for Calendar, Contacts, Mail, and cross-app tasks.
+provide the same setup for Calendar, Contacts, Mail, Reminders, and cross-app tasks.
 
 The [agent documentation index](/llms.txt) links to clean Markdown versions.
 iCLI works with iCloud-hosted data, including data synced from Apple apps.
@@ -79,7 +79,7 @@ or `calendar events import`; both default to two requests. See the
 
 - [Getting started](./icloud-cli/getting-started): install iCLI and connect your iCloud account.
 - [Agent guide](./icloud-cli/agent-guide): the compact operating procedure for task-oriented agents.
-- [Agent skills](./icloud-cli/skills): install one standalone app skill or the four-skill bundle.
+- [Agent skills](./icloud-cli/skills): install one standalone app skill or the five-skill bundle.
 - [Update iCLI](./icloud-cli/updating): install the latest release or update a source build.
 - [Account and output settings](./icloud-cli/account-and-output): manage credentials, accounts, and response formats.
 - [Calendar](./icloud-cli/calendar): manage calendars and events.
