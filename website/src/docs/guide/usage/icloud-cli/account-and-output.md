@@ -7,6 +7,14 @@ description: Configure iCLI accounts, credentials, and response formats.
 
 ## Configure iCloud access
 
+### Sign in to Apple
+
+Run `auth add EMAIL` with your Apple Account password, then `auth verify EMAIL CODE` when requested. Use `--password-stdin` and `--code-stdin` with private input for automation. The first configured account becomes default for all services. The Apple Account password is never saved; pending challenges and trusted sessions are stored in the OS credential store.
+
+`auth check` contacts Apple without updating saved session data; `auth refresh` renews tokens. Neither prompts for input. Follow structured recovery commands, then retry your original operation. `auth resend --method device|sms` requests another code for a pending challenge. `auth apple-login` remains a deprecated alias for starting sign-in.
+
+Migration: `auth add` previously saved an app-specific password. Use `auth app-password` for that operation now, and `auth check --app-password` for the old service checks.
+
 ### Prepare an Apple app-specific password
 
 Before authenticating, read [Apple's current app-specific password
@@ -23,7 +31,7 @@ and account addresses/defaults in a local TOML configuration file.
 With an interactive terminal, omit the password to use a hidden prompt:
 
 ```sh
-icli auth add you@icloud.com
+icli auth app-password you@icloud.com
 ```
 
 For agents, use `--password-stdin` and provide the password through stdin.
@@ -32,16 +40,16 @@ These examples read a file you have already supplied.
 ::: code-group
 
 ```sh [macOS / Linux]
-icli auth add you@icloud.com --password-stdin < password.txt
+icli auth app-password you@icloud.com --password-stdin < password.txt
 ```
 
 ```powershell [PowerShell]
-Get-Content -Raw password.txt | icli auth add you@icloud.com --password-stdin
+Get-Content -Raw password.txt | icli auth app-password you@icloud.com --password-stdin
 ```
 
 :::
 
-`auth add` stores credentials locally without contacting Apple or validating
+`auth app-password` stores credentials locally without contacting Apple or validating
 them. The first saved account becomes the default. Adding further accounts
 preserves the current default and returns the command to change it.
 
@@ -61,16 +69,16 @@ A headless environment needs a working credential store.
 
 ```sh
 icli auth list
-icli auth check --email you@icloud.com --json
+icli auth check --app-password --email you@icloud.com --json
 ```
 
-`auth check` independently probes Mail, Calendar, and Contacts. It runs all
+`auth check --app-password` independently probes Mail, Calendar, and Contacts. It runs all
 three checks even if one fails. By default it uses the saved password and
 never prompts. A supplied password or `--password-stdin` checks that value
 without changing the saved credentials.
 
 ```powershell
-Get-Content -Raw password.txt | icli auth check --email you@icloud.com --password-stdin
+Get-Content -Raw password.txt | icli auth check --app-password --email you@icloud.com --password-stdin
 ```
 
 Checks are read-only and do not verify write access. All services passing
@@ -111,9 +119,7 @@ not delete remote iCloud data. Removing the default automatically selects the
 sole remaining account. If several remain, it clears the default and returns
 commands for selecting one.
 
-To replace a saved password, remove the account, add it again with the new
-password, then run `auth check`. Review the default account after replacing
-credentials in a setup with multiple accounts.
+To replace an app-specific password, run `auth app-password EMAIL` again. It preserves the default and any Apple session. Restart Apple sign-in with `auth add EMAIL` if needed. Removing an account also deletes its pending challenge, trusted session, and all session credential chunks.
 
 ## Select the response format
 

@@ -133,20 +133,15 @@ python mcp/server.py --icli .\target\release\icli.exe --list-tools
 
 ## Credentials and writes
 
-Configure credentials with iCLI first, or call `icli_auth_add` using the dedicated
-`password` input and an app-specific password. For example, the input shape is
-`{"args": ["account@example.com"], "password": "APP_SPECIFIC_PASSWORD"}`. Replace
-the placeholder through your MCP client's secret handling. The server forwards
-it through the child process's stdin with `--password-stdin`. The same input
-works for `icli_auth_check`. Password arguments and positional passwords are
-rejected for these commands, including calls made through group tools.
-`--password-stdin` in `args` requires the `password` input. Auth check without a
-password uses saved credentials. Auth add without a password returns a CLI error
-because the child has no interactive terminal.
+Configure credentials with iCLI first, or call `icli_auth_add` with the dedicated `password` input containing the Apple Account password. It starts sign-in and returns the pending state. Submit the code separately using `icli_auth_verify` with `{"args": ["account@example.com"], "code": "CODE_FROM_PRIVATE_INPUT"}`. Replace placeholders through the MCP client's private input handling. The adapter forwards secrets through child stdin with `--password-stdin` or `--code-stdin`, and redacts them from child output.
+
+For Mail, Calendar, and Contacts, the recommended app-specific password belongs in the `password` input of `icli_auth_app_password`. `icli_auth_check` checks the saved Apple session by default. To check app-password services, pass `args: ["--app-password"]`; an optional `password` input checks that supplied value without saving it. `icli_auth_refresh` renews saved tokens and never requires a secret input. Follow recovery commands, then retry the original service operation.
+
+Password/code flags and positional secrets in `args` are rejected, including calls through root/group tools. An explicit stdin flag requires its matching dedicated secret input. Input commands without a secret return a CLI error because the child has no interactive terminal. Migration: older MCP clients using `icli_auth_add` for app-specific passwords must use `icli_auth_app_password` instead. Restart the adapter after rebuilding the CLI to refresh its catalog.
 
 The server does not log requests, CLI arguments, passwords, or account output.
 MCP clients still receive the tool input and private account results; use a
-trusted local client and its credential controls. Password inputs remain in
+trusted local client and its credential controls. Password and code inputs remain in
 process memory and follow normal Python memory management.
 
 Writes have the same effects as running the corresponding CLI command. Remote

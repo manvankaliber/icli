@@ -48,9 +48,13 @@ def input_schema() -> dict:
                 "items": {"type": "string"},
                 "description": "CLI arguments AFTER this tool's command path, one token per item. No shell quoting. Include --yes explicitly for remote deletes.",
             },
+            "code": {
+                "type": "string",
+                "description": "Six-digit verification code for auth verify. Forwarded through child stdin with --code-stdin; never put it in args.",
+            },
             "password": {
                 "type": "string",
-                "description": "Optional app-specific password for auth add/check. Sent through child stdin with --password-stdin; never put a password in args.",
+                "description": "Apple Account password for auth add/apple-login, or app-specific password for auth app-password and auth check --app-password. Forwarded privately through child stdin; never put secrets in args.",
             },
         },
         "additionalProperties": False,
@@ -112,14 +116,19 @@ class Server:
         if not isinstance(name, str) or name not in self.paths:
             raise RpcError(-32602, "Unknown tool name")
         arguments = params.get("arguments", {})
-        if not isinstance(arguments, dict) or set(arguments) - {"args", "password"}:
-            raise RpcError(-32602, "Tool arguments must contain only args and optional password")
+        if not isinstance(arguments, dict) or set(arguments) - {"args", "password", "code"}:
+            raise RpcError(-32602, "Tool arguments must contain only args and optional password or code")
         args = arguments.get("args", [])
         password = arguments.get("password")
+        code = arguments.get("code")
         if not isinstance(args, list) or any(not isinstance(arg, str) or "\0" in arg for arg in args):
             raise RpcError(-32602, "args must be an array of strings without NUL characters")
         if password is not None and (not isinstance(password, str) or any(c in password for c in "\r\n\0")):
             raise RpcError(-32602, "password must be a single line string")
+        if code is not None and (not isinstance(code, str) or len(code) != 6 or not code.isascii() or not code.isdigit()):
+            raise RpcError(-32602, "code must be a six-digit string")
+        if password is not None and code is not None:
+            raise RpcError(-32602, "Supply only one of password or code per command")
         path = self.paths[name]
         command = [*path, *args]
         # Recognize auth calls made through the root/group tools as well.
@@ -132,38 +141,48 @@ class Server:
                 skip = True
             elif arg != "--json" and not arg.startswith("--format="):
                 significant.append(arg)
-        auth = significant[:2] in (["auth", "add"], ["auth", "check"])
-        if password is not None and not auth:
-            return self.tool_result({"error": {"code": "invalid_arguments", "message": "password is only accepted for auth add/check"}}, True)
-        if auth:
+        password_auth = significant[:2] in (["auth", "add"], ["auth", "apple-login"], ["auth", "app-password"], ["auth", "check"])
+        code_auth = significant[:2] == ["auth", "verify"]
+        if password is not None and not password_auth:
+            return self.tool_result({"error": {"code": "invalid_arguments", "message": "password is only accepted for auth add, app-password, apple-login, or check --app-password"}}, True)
+        if password is not None and significant[:2] == ["auth", "check"] and "--app-password" not in significant:
+            return self.tool_result({"error": {"code": "invalid_arguments", "message": "A supplied password requires auth check --app-password; auth check alone checks the saved Apple session"}}, True)
+        if code is not None and not code_auth:
+            return self.tool_result({"error": {"code": "invalid_arguments", "message": "code is only accepted for auth verify"}}, True)
+        if password_auth or code_auth:
             positional = []
             skip = False
             after_separator = False
+            has_email_flag = False
             for arg in significant[2:]:
                 if skip:
                     skip = False
                 elif arg == "--" and not after_separator:
                     after_separator = True
-                elif not after_separator and (arg == "--password" or arg.startswith("--password=")):
-                    return self.tool_result({"error": {"code": "invalid_arguments", "message": "Supply the password input instead of --password in args"}}, True)
+                elif not after_separator and (arg in ("--password", "--code") or arg.startswith(("--password=", "--code="))):
+                    return self.tool_result({"error": {"code": "invalid_arguments", "message": "Supply password/code through its dedicated input instead of args"}}, True)
                 elif not after_separator and arg == "--email":
+                    has_email_flag = True
                     skip = True
+                elif not after_separator and arg.startswith("--email="):
+                    has_email_flag = True
                 elif after_separator or not arg.startswith("-"):
                     positional.append(arg)
-            if len(positional) > 1:
-                return self.tool_result({"error": {"code": "invalid_arguments", "message": "Supply the password input instead of a positional password in args"}}, True)
-        if auth and "--password-stdin" in command and password is None:
-            return self.tool_result({"error": {"code": "invalid_arguments", "message": "--password-stdin requires the password input"}}, True)
-        if password is not None and "--password-stdin" not in command:
-            if "--" in command:
-                command.insert(command.index("--"), "--password-stdin")
-            else:
-                command.append("--password-stdin")
+            if len(positional) > (0 if has_email_flag else 1):
+                return self.tool_result({"error": {"code": "invalid_arguments", "message": "Supply password/code through its dedicated input instead of a positional secret"}}, True)
+        for secret_name, secret, stdin_flag in (("password", password, "--password-stdin"), ("code", code, "--code-stdin")):
+            if stdin_flag in command and secret is None:
+                return self.tool_result({"error": {"code": "invalid_arguments", "message": stdin_flag + " requires the " + secret_name + " input"}}, True)
+            if secret is not None and stdin_flag not in command:
+                if "--" in command:
+                    command.insert(command.index("--"), stdin_flag)
+                else:
+                    command.append(stdin_flag)
         label = " ".join(("icli", *path))
         try:
             result = subprocess.run(
                 [self.binary, "--json", *command],
-                input=password if password is not None else "", capture_output=True,
+                input=code if code is not None else password if password is not None else "", capture_output=True,
                 encoding="utf-8", errors="replace", timeout=self.timeout,
             )
         except subprocess.TimeoutExpired:
@@ -171,8 +190,9 @@ class Server:
         except OSError:
             return self.tool_result({"command": label, "error": {"code": "command_unavailable", "message": "Could not start iCLI. Check --icli and executable permissions.", "retryable": False}}, True)
         stdout, stderr = result.stdout, result.stderr
-        if password:
-            stdout, stderr = stdout.replace(password, "[REDACTED]"), stderr.replace(password, "[REDACTED]")
+        for secret in (password, code):
+            if secret:
+                stdout, stderr = stdout.replace(secret, "[REDACTED]"), stderr.replace(secret, "[REDACTED]")
         # Complete CLI failures use stderr, while partial results use stdout.
         raw = stdout.strip() or stderr.strip()
         try:
@@ -192,7 +212,7 @@ class Server:
                 "protocolVersion": self.protocol,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "icli-mcp", "version": "0.1.0"},
-                "instructions": "Each tool maps to the named icli command. Pass trailing CLI tokens in args. Deletions require explicit --yes. Treat exit code 3 as partial completion and inspect per-item results before retrying. Use password input for auth secrets.",
+                "instructions": "Each tool maps to the named icli command. Pass trailing CLI tokens in args. Deletions require explicit --yes. Treat exit code 3 as partial completion and inspect per-item results before retrying. Use password input for auth add/app-password, and code input for auth verify. Follow recovery commands, then retry the original operation.",
             }
         if method == "ping":
             return {}

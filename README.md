@@ -1,10 +1,10 @@
 # iCLI
 
-**Give your agent the best access to iCloud Calendar, Contacts, and Mail.**
+**Give your agent access to iCloud Calendar, Contacts, Mail, and Apple Reminders.**
 
-iCLI is a blazingly fast agent-first commandline tool written in Rust that gives your agents specialized commands that return not just data or errors, but also concise documentation, simple troubleshooting steps and proper guidance to prevent any unnecessary overthinking and easy to make mistakes when handing data remotely in your iCloud. You can reschedule your whole calendar, and mail a summary of all changes to all your contacts for little to no token spend, in minutes instead of hours.
+iCLI is an agent-first command-line tool written in Rust. It provides dedicated commands and structured output for iCloud Calendar, Contacts, Mail, and Apple Reminders. Calendar, Contacts, and Mail use app-specific passwords. Reminders uses a saved Apple Account session and supports reminder reads and writes, incremental sync, alarms, hashtags, URL attachments, and recurrence through iCloud's private CloudKit service.
 
-On average automations using iCLI perform **up to 7x faster**, **1.7x better** (less errors, more completed tasks) and **cost 70% less** to run when compared to Computer Use, Browser Use, pycloud and similar, or abusing other existing interfaces. It can bulk update calendars thanks to its smart concurrency mode (enabled by default) which handles iCloud platform specific conditions that cause random errors and protocols oddities for you with ease.
+Use the CLI directly or connect an agent through the local MCP adapter. Each operation reports structured results and recovery instructions. Calendar batch operations support bounded concurrency.
 
 Use the same CLI yourself, or connect an agent through the local MCP adapter. 
 
@@ -14,9 +14,9 @@ Use the same CLI yourself, or connect an agent through the local MCP adapter.
 
 ## iCloud app coverage
 
-Calendar, Contacts, and Mail cover every workflow listed for those apps in the comparison below. The other app tiles show where iCLI has no matching command yet compared to other alternatives.
+Calendar, Contacts, and Mail cover every workflow listed for those apps in the comparison below. For Apple Reminders, iCLI can read lists and reminders, create and update reminders, change completion status, soft-delete records, read snapshots and incremental changes, and manage alarms, hashtags, URL attachments, and recurrence rules. The comparison marks workflows that still have no matching command.
 
-Calendar supports event search, recurrence, alarms, sharing, imports, and parallel queries. Contacts supports search, selected or complete property data, card updates, and groups. Mail supports folders, search, attachments, drafts, sending, flags, moves, and deletion. These operate on iCloud data; data stored only on a device or another provider is outside iCLI's scope.
+Calendar supports event search, recurrence, alarms, sharing, imports, and parallel queries. Contacts supports search, selected or complete property data, card updates, and groups. Mail supports folders, search, attachments, drafts, sending, flags, moves, and deletion. Reminders supports reads and writes for reminder records and their supported related records. These operate on iCloud data; data stored only on a device or another provider is outside iCLI's scope.
 
 ![iCLI workflow coverage across iCloud apps, with a percentage and stage for each app.](assets/app-coverage.svg)
 
@@ -39,16 +39,42 @@ On Windows PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/manvankaliber/icli/main/install.ps1')))
 ```
 
-Create an [Apple app-specific password](https://support.apple.com/en-us/102654), then add provide your credentials to iCLI using `icli auth add`. 
-iCLI saves your password in the operating system's credential store, so make sure that one is available.
+Start Apple Account sign-in, then submit Apple's code with a separate command:
 
 ```sh
 icli auth add you@icloud.com
-icli auth check you@icloud.com
+icli auth verify you@icloud.com
+icli reminders lists
+icli reminders list --limit 100
+```
+
+The password and code use hidden prompts in a terminal. Agents can pipe private input to `auth add EMAIL --password-stdin` and `auth verify EMAIL --code-stdin`. Follow `data.auth_state` and `next_steps`: starting a pending sign-in succeeds with `verification_required` and exits immediately. The Apple Account password is never saved. Pending challenges, trusted tokens, and cookies are stored in the operating system credential store and reused by subsequent commands.
+
+`icli auth check` checks the saved session without changing it. `icli auth refresh` renews saved tokens. When authentication needs attention, follow the returned recovery command, then retry the original service command. Request another code with `icli auth resend --method device` or `--method sms`. SMS requires an Apple-provided trusted phone. Newer bridge-only challenges and hardware security keys remain unsupported.
+
+For Mail, Calendar, and Contacts, we recommend an [Apple app-specific password](https://support.apple.com/en-us/102654). Those backends currently require one; Apple Account sign-in alone does not unlock them. Save it on the same account, or create an app-password-only account without Apple sign-in:
+
+```sh
+icli auth app-password you@icloud.com
+icli auth check --app-password
 icli calendar list
 icli contacts list
 icli mail list
 ```
+
+The first configured account becomes the default for every service. Select another with `--email EMAIL` or `icli config default-user EMAIL`. Adding or replacing either credential preserves the other and the current default.
+
+| Authentication task | Command |
+| --- | --- |
+| Start Apple sign-in | `auth add EMAIL [--password-stdin]` |
+| Complete verification | `auth verify EMAIL [--code-stdin]` |
+| Request another code | `auth resend [--method device\|sms]` |
+| Check or renew the saved session | `auth check`, `auth refresh` |
+| Save an app-specific password | `auth app-password EMAIL [--password-stdin]` |
+| Check Mail, Calendar, and Contacts | `auth check --app-password` |
+| Remove local credentials and sessions | `auth remove EMAIL` |
+
+**Migration:** `auth add` now starts Apple Account sign-in. Scripts that used it to save app-specific passwords must use `auth app-password` instead, and add `--app-password` to their service checks. `auth apple-login` is a deprecated alias for `auth add` and now returns before code verification.
 
 Update iCLI with `icli update`; use `icli update --check` to see whether a newer stable release is available without downloading it. Source builds and package-managed installations should use their original update method. A successful update takes effect the next time you run iCLI.
 
@@ -64,6 +90,7 @@ For an existing release installation, run `icli update` to check and install the
 - [Calendar](https://managing.software/docs/guide/usage/icloud-cli/calendar): search events, import events, share calendars, and download calendars.
 - [Contacts](https://managing.software/docs/guide/usage/icloud-cli/contacts): search and download contacts, discover properties, and manage cards.
 - [Mail](https://managing.software/docs/guide/usage/icloud-cli/mail): search, attachments, drafts, sending, and folders.
+- [Apple Reminders](https://managing.software/docs/guide/usage/icloud-cli/reminders): sign in, read and edit reminders, sync changes, and manage supported related records.
 - [Updating](https://managing.software/docs/guide/usage/icloud-cli/updating) and [recovery](https://managing.software/docs/guide/usage/icloud-cli/recovery).
 - [Agent skills](skills/README.md), [agent guide](AGENT_GUIDE.md), and [agent documentation index](https://managing.software/llms.txt).
 
@@ -73,7 +100,7 @@ Each card groups workflows by iCloud app. A green check means the CLI has a comm
 
 ![Feature-by-feature comparison of iCLI and pyicloud command-line workflows, grouped into app cards, plus a shared CLI access card.](assets/feature-comparison.svg)
 
-The comparison covers iCLI `main` and [pyicloud 2026.10.1](https://pypi.org/project/pyicloud/2026.10.1/), released October 15, 2026. It counts commands in the [released CLI command tree](https://github.com/timlaing/pyicloud/tree/2d3d137e17cdd06e4e58a4d0e0e400dccb31b08f/pyicloud/cli), not library methods or documentation alone. The source revision is [2d3d137](https://github.com/timlaing/pyicloud/commit/2d3d137e17cdd06e4e58a4d0e0e400dccb31b08f). Calendar sharing in iCLI uses iCloud invitations, and the list reports invitation status. A newer release may change the comparison.
+The comparison covers iCLI 1.1.0 and [pyicloud 2026.10.1](https://pypi.org/project/pyicloud/2026.10.1/), released October 15, 2026. It counts commands in the [released CLI command tree](https://github.com/timlaing/pyicloud/tree/2d3d137e17cdd06e4e58a4d0e0e400dccb31b08f/pyicloud/cli), not library methods or documentation alone. The source revision is [2d3d137](https://github.com/timlaing/pyicloud/commit/2d3d137e17cdd06e4e58a4d0e0e400dccb31b08f). Calendar sharing in iCLI uses iCloud invitations, and the list reports invitation status. A newer release may change the comparison.
 
 ## Benchmarks
 

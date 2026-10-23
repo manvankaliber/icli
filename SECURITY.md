@@ -14,4 +14,4 @@ Security fixes target the latest published release. Update to the latest release
 
 ## Credential handling
 
-iCLI uses Apple app-specific passwords. It stores saved passwords in the operating system credential store and does not write them to its regular configuration file. Avoid passing passwords as command-line arguments, where shell history or process listings may expose them.
+iCLI stores app-specific passwords, pending Apple sign-in challenges, session tokens, and cookies in the operating system credential store. It never saves the Apple Account password, and stores only account addresses and settings in its regular configuration file. Passwords and verification codes can be read from private stdin or hidden terminal prompts. Avoid passing passwords as command-line arguments, where shell history or process listings may expose them.

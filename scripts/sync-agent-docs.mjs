@@ -15,7 +15,7 @@ files.set('website/src/docs/guide/usage/icloud-cli/agent-guide.md',
 const base = 'https://managing.software/docs/guide/usage/icloud-cli';
 files.set('website/public/llms.txt', `# iCLI
 
-> iCLI gives agents access to iCloud Calendar, Contacts, and Mail through a local CLI with self-contained help, resource IDs, structured results, and recovery instructions.
+> iCLI gives agents access to iCloud Calendar, Contacts, Mail, and Apple Reminders through a local CLI with self-contained help, resource IDs, structured results, and recovery instructions.
 
 Start with the agent guide. Before the first iCLI task in a session, update a release installation using \`icli update\`, then use the installed CLI's help for exact commands, defaults, and side effects. Follow the guide's fallback for older, source, or package-managed installations. Authenticate through private input; credentials are stored in the operating system credential store. Use a connected tool when it already meets the request.
 
@@ -32,6 +32,7 @@ Start with the agent guide. Before the first iCLI task in a session, update a re
 - [Export, search, and manage an iCloud calendar](${base}/calendar.md): range downloads, event text search with skip/limit pagination, writes, sharing, recurrence, and imports.
 - [Search iCloud contacts](${base}/contacts.md): CardDAV text search, skip/limit pagination, complete contact properties, edits, and groups.
 - [Search iCloud email and download attachments](${base}/mail.md): skip/limit pagination, folders, scoped UIDs, drafts, sending, and mailbox changes.
+- [Apple Reminders](${base}/reminders.md): Apple Account sign-in, trusted-device verification, reminder reads and writes, incremental sync, and supported related records.
 - [Errors and recovery](${base}/recovery.md): structured failures, partial results, and uncertain writes.
 
 ## Optional integrations

@@ -10,10 +10,21 @@ fn enrich(mut command: Command, path: String) -> Command {
         let description = match arg.get_id().as_str() {
             "json" => "Force JSON, overriding --format and the saved format",
             "format" => "Response format for this invocation; overrides saved config unless --json is present",
+            "email" if path.starts_with("icli reminders") => "Apple Account email; defaults to the saved default account, then the sole configured account",
             "email" | "email_flag" | "email_pos" => "Configured account email; otherwise use the default account, then the sole saved account; multiple accounts require a choice",
+            "password" | "password_flag" if path == "icli auth add" => "Apple Account password used only for sign-in; prefer --password-stdin over arguments",
             "password" | "password_flag" => "Apple app-specific password; arguments may be exposed in shell history/process listings; prefer --password-stdin",
+            "code" | "code_flag" => "Six-digit Apple verification code; prefer --code-stdin over arguments",
+            "code_stdin" => "Read the verification code from stdin; remove only the trailing line ending",
+            "method" if path == "icli auth resend" => "Request a code on a trusted device, or by SMS when Apple offers a trusted phone",
+            "app_password" => "Check Mail, Calendar, and Contacts with the saved or supplied app-specific password",
+            "password_stdin" => "Read the password from stdin; remove only the trailing line ending",
             "response_format" => "Save agent, csv, or json as the default; this response uses the new format unless explicitly overridden",
             "calendar" | "calendar_pos" => "Calendar name, stable ID, full href, or href path from calendar list; ambiguous matches fail with candidates",
+            "id" if path.starts_with("icli reminders") => "Stable reminder ID from `icli reminders list` or `icli reminders get`",
+            "hashtag_id" => "Stable hashtag ID from `icli reminders hashtag list`",
+            "attachment_id" => "Stable attachment ID from `icli reminders attachment list`",
+            "rule_id" => "Stable recurrence rule ID from `icli reminders recurrence list`",
             "uid" => "Resource UID from this service's list command; contacts/events also accept an exact resource href from ambiguity errors; mail UIDs are scoped to --folder (INBOX by default)",
             "folder" => "IMAP folder name; defaults to INBOX",
             "source" => "Source IMAP folder for a move; defaults to INBOX",
@@ -38,10 +49,14 @@ fn enrich(mut command: Command, path: String) -> Command {
             "include" => "Extra properties to return; repeat or comma-separate names; contacts also accepts all",
             "limit" if path == "icli calendar events search" => "Maximum results after --skip in resource href order, not chronological order; 0 returns none",
             "limit" if path.starts_with("icli contacts") => "Maximum results after --skip in ascending UID order; 0 returns none",
+            "limit" if path == "icli reminders list" => "Maximum reminders returned after --skip; 0 returns none",
+            "limit" if path == "icli reminders snapshot" => "Maximum rows per record type; truncated_types identifies capped arrays",
+            "limit" if path == "icli reminders changes" => "Maximum changed reminder records returned in this sync page",
             "limit" => "Maximum message UIDs fetched after --skip, newest IMAP UIDs first; 0 returns none",
             "skip" if path.starts_with("icli mail") => "Matching message UIDs to skip, newest first, before fetching headers; zero-based offset",
             "skip" if path == "icli calendar events search" => "Matching events to skip in resource href order; DAV downloads all matches, so use one sufficiently large --limit when possible",
             "skip" if path.starts_with("icli contacts") => "Matching contacts to skip in ascending UID order; DAV downloads skipped matches, so use one sufficiently large --limit when possible",
+            "skip" if path == "icli reminders list" => "Matching reminders to skip before applying --limit; CloudKit still reads skipped rows to reach this offset",
             "skip" => "Matching results to skip before applying --limit; zero-based offset",
             "concurrency" => "Maximum concurrent calendar requests, from 1 to 8; defaults to 2",
             "from" | "from_pos" => "First date, YYYY-MM-DD, inclusive at 00:00 UTC",
@@ -50,15 +65,43 @@ fn enrich(mut command: Command, path: String) -> Command {
             "to" => "Recipient emails, comma-separated; mail create saves a draft, mail send delivers it",
             "start" => "Timed event start as RFC3339 with timezone, for example 2026-10-20T10:00:00+02:00; provide --end too",
             "end" => "Timed event end as RFC3339 with timezone; must be after --start",
+            "all_day" if path == "icli reminders create" => "Treat the due date as an all-day date",
+            "all_day" if path.starts_with("icli reminders") => "Set or clear all-day status on the reminder",
             "all_day" => "Single all-day date, YYYY-MM-DD; exclusive with --start/--end; update can convert a timed event",
+            "title" if path == "icli reminders create" => "Title for the new reminder",
+            "title" if path.starts_with("icli reminders") => "New reminder title; update changes only the supplied field",
+            "notes" if path == "icli reminders create" => "Notes for the new reminder",
+            "notes" if path.starts_with("icli reminders") => "New reminder notes; update changes only the supplied field",
+            "due" if path.starts_with("icli reminders") => "Due date as YYYY-MM-DD or RFC3339; update accepts --clear-due to remove it",
+            "clear_due" => "Clear the reminder due date",
+            "priority" if path.starts_with("icli reminders") => "Reminder priority from 0 to 9; 0 is no priority",
+            "flagged" if path == "icli reminders create" => "Create the reminder with its flagged state set",
+            "flagged" if path.starts_with("icli reminders") => "Set or clear the reminder's flagged state",
+            "completed" => "Set or clear completion; completion time is updated with the status",
+            "status" => "Completion state: completed or incomplete",
+            "latitude" => "Location latitude in degrees, from -90 through 90",
+            "longitude" => "Location longitude in degrees, from -180 through 180",
+            "radius" => "Location trigger radius in meters; must be positive",
+            "proximity" => "Trigger when arriving or leaving the location",
+            "address" => "Human-readable address stored with the location trigger",
+            "frequency" if path.starts_with("icli reminders recurrence") => "Recurrence interval unit: daily, weekly, monthly, or yearly",
+            "interval" => "Number of frequency units between occurrences; must be at least 1",
+            "occurrence_count" => "Stop after this many occurrences; 0 means no fixed count",
+            "first_day_of_week" => "Week start day from 0 (Sunday) through 6 (Saturday)",
+            "url" if path.starts_with("icli reminders attachment") => "Absolute HTTP or HTTPS URL for the attachment",
+            "uti" => "Uniform Type Identifier stored with the attachment",
             "summary" => "Event title; update changes only supplied fields",
             "location" => "Event location; an empty string clears it on update",
             "description" => "Event description; an empty string clears it on update",
+            "name" if path.starts_with("icli reminders hashtag") => "Hashtag text to attach or set; do not include the leading #",
             "name" => "Calendar or contact name; quote names containing spaces",
+            "list" if path == "icli reminders create" => "Stable list ID from `icli reminders lists`",
+            "list" if path == "icli reminders snapshot" => "Stable list ID from `icli reminders lists`",
             "subject" => "Message subject, without header line breaks",
             "body" => "Plain-text message body; quote multiline values according to your shell",
             "file" => "Readable local .ics file containing VEVENT entries with UIDs",
             "phone" => "Contact phone number; replaces existing TEL values on update",
+            "yes" if path.starts_with("icli reminders") => "Confirm remote soft-delete; the command fails without this flag",
             "yes" => "Confirm permanent remote deletion; the command fails without this flag",
             _ => "Value for this operation; see the command description and examples",
         };
@@ -66,16 +109,97 @@ fn enrich(mut command: Command, path: String) -> Command {
     });
     let override_about = match path.as_str() {
         "icli auth" => Some(
-            "Before configuring access, read Apple's current app-specific password instructions at https://support.apple.com/en-us/102654 and create an app-specific password at https://account.apple.com/. A normal Apple Account password is unsuitable. Use auth add to store credentials locally, then auth check to test Mail, Calendar, and Contacts. Passwords are stored in the operating system credential store.",
+            "Start Apple Account sign-in with auth add and submit the code separately with auth verify. Trusted tokens and pending challenges are saved in the OS credential store; the Apple Account password is never saved. Commands reuse the default account and session. auth check checks the session, auth refresh renews saved tokens, and auth resend requests a new code. Mail, Calendar, and Contacts currently require a recommended app-specific password: save it with auth app-password and check it with auth check --app-password. auth add no longer saves app-specific passwords; migrate old scripts to auth app-password. auth apple-login is a deprecated alias for auth add.",
         ),
         "icli auth add" => Some(
-            "Save an account and Apple app-specific password locally. This command makes no request to Apple and does not validate credentials. The first account becomes the default; later additions preserve the current default. Use --password-stdin for agents. A hidden password prompt is used only with terminal stdin. Password arguments may appear in shell history or process listings. Read https://support.apple.com/en-us/102654 before obtaining credentials. Run auth check after saving.",
+            "Start or restart Apple Account sign-in with EMAIL and the Apple Account password. Accepts positional EMAIL [PASSWORD], --email/--password, or --password-stdin; arguments can expose secrets in history/process listings, so agents should use a private secret source piped to stdin. Only terminal stdin gets a hidden password prompt. This contacts Apple and requests trusted-device verification, or SMS for supported fallback challenges, then exits without waiting for the code. A successful start has exit 0 and data.auth_state=verification_required or authenticated. Follow next_steps and submit the code with auth verify. Pending cookies/tokens are saved in the OS credential store; the Apple Account password is never saved. The first configured account becomes default; re-signing in preserves the default and any app-specific password. Newer bridge-only challenges and hardware keys are unsupported. Deprecated alias: apple-login. For app-specific passwords use auth app-password instead.",
+        ),
+        "icli auth app-password" => Some(
+            "Save or replace an Apple app-specific password for Mail, Calendar, and Contacts. Recommended for those services. Creates the account if needed; Apple Account sign-in is not required. Makes no network requests and does not validate credentials. Accepts EMAIL [PASSWORD], --email/--password, or --password-stdin. Prefer private stdin for agents; a hidden prompt is available only with terminal stdin. Password arguments may appear in shell history/process listings. Stores the password in the OS credential store and preserves any Apple session and current default. The first account becomes default. Next run auth check --app-password. Apple's setup instructions: https://support.apple.com/en-us/102654.",
+        ),
+        "icli auth verify" => Some(
+            "Submit a six-digit verification code to the saved pending Apple sign-in. Use EMAIL CODE, --email EMAIL --code CODE, or EMAIL --code-stdin; prefer a private stdin source. When omitted in a terminal the code uses a hidden prompt; it never prompts in noninteractive mode. EMAIL otherwise defaults to the saved default, then the sole configured account. On success saves the trusted session; the agent must retry its original command. It never replays that command. Incorrect codes retain the pending challenge. Expired challenges return an auth add recovery command. If Apple accepted the code but the trust/session exchange failed, use auth refresh to finish it without resubmitting the code.",
+        ),
+        "icli auth resend" => Some(
+            "Request another code for the selected account's saved pending sign-in. --method device is the default; --method sms requests a text when Apple supplied a trusted phone. This contacts Apple but never submits a code or waits for input. It saves updated challenge headers and cookies. Then run auth verify with the new code. If the challenge expired, restart with auth add.",
+        ),
+        "icli auth refresh" => Some(
+            "Renew the selected Apple Account session with its saved tokens. Also finishes the trust/session exchange when a verification code was already accepted. Contacts Apple, updates the OS credential store, and never asks for a password or code. A pending code challenge returns auth_verification_required; rejected tokens return auth_sign_in_required with an exact auth add command. No original service command is replayed. Retry that command after recovery succeeds.",
         ),
         "icli auth check" => Some(
-            "Independently authenticate to Mail, Calendar, and Contacts using saved credentials, or a supplied password/--password-stdin. This never prompts or changes saved credentials. All three checks run even when one fails. Results are read-only and do not verify write access. All pass: exit 0; some pass: status partial, exit 3; none pass: status error, exit 1.",
+            "Without --app-password, contact Apple to check the selected saved session without persisting new tokens or cookies. Never prompts, reauthenticates, or updates credentials. Pending verification and rejected sessions return structured recovery commands. With --app-password, independently check Mail, Calendar, and Contacts with the saved or supplied password/--password-stdin. All three run even if one fails; all pass exits 0, some pass is partial exit 3, none pass exits 1. These checks read only and do not verify write access. PASSWORD inputs require --app-password.",
+        ),
+        "icli reminders" => Some(
+            "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The saved default account and trusted session are reused. The first read may request trusted-device approval for encrypted Reminders data. Inspect stable list and reminder IDs before writing. Deletes require --yes.",
+        ),
+        "icli reminders lists" => Some(
+            "Read reminder lists and their stable service IDs from Apple's CloudKit Reminders service, falling back to the legacy endpoint when CloudKit is not advertised. The first read may request trusted-device approval for encrypted Reminders data. This command does not change reminder data.",
+        ),
+        "icli reminders list" => Some(
+            "Read active and completed reminders in all current lists. Each row includes its stable record ID, list ID/name, completion state, and due date when present. By default, return the first 100 reminders; use --skip and --limit to page through more results. The first read may request trusted-device approval for encrypted Reminders data. This command does not change reminder data.",
+        ),
+        "icli reminders get" => Some(
+            "Read one reminder by stable ID, including notes, due date, status, flags, priority, list and related-record IDs. This command does not change data.",
+        ),
+        "icli reminders create" => Some(
+            "Create one reminder in the specified stable list ID. Due dates accept YYYY-MM-DD or RFC3339. All-day due dates are interpreted at UTC midnight. Apple assigns a stable ID and the command reads the new record back.",
+        ),
+        "icli reminders update" => Some(
+            "Update only supplied fields on one reminder. Omitted fields are preserved. Use --clear-due to remove its due date. Apple CloudKit text fields use a versioned topotext document; inspect the saved record if a write is rejected.",
+        ),
+        "icli reminders set-status" => Some(
+            "Set one reminder to completed or incomplete. Completion timestamps are written or cleared with the status.",
+        ),
+        "icli reminders delete" => Some(
+            "Soft-delete one reminder in Apple CloudKit. The required --yes flag confirms the remote write; the service keeps a deleted record for sync.",
+        ),
+        "icli reminders snapshot" => Some(
+            "Fetch one list's reminders and related alarms, triggers, attachments, hashtags, and recurrence rules as a snapshot. --limit caps each record-type array independently; truncated_types identifies arrays that hit the cap. This reads CloudKit records and does not change them.",
+        ),
+        "icli reminders changes" => Some(
+            "Fetch one page of changed or deleted reminders from the CloudKit zone. Save the returned cursor and pass it as --since on the next call. A response with more_available=true has another page.",
+        ),
+        "icli reminders sync-cursor" => Some(
+            "Read Apple's opaque current zone cursor for use with `icli reminders changes --since CURSOR`. Do not edit or interpret the cursor.",
+        ),
+        "icli reminders alarm list" => {
+            Some("Read alarm records and their date or location triggers for one reminder.")
+        }
+        "icli reminders alarm add-location" => Some(
+            "Add a location trigger and alarm to one reminder. Latitude, longitude, radius, and arrival/departure proximity are sent to Apple as an atomic CloudKit record group.",
+        ),
+        "icli reminders hashtag list" => Some("Read hashtags attached to one reminder."),
+        "icli reminders hashtag create" => Some("Attach a hashtag to one reminder."),
+        "icli reminders hashtag update" => {
+            Some("Rename a hashtag attached to the selected reminder.")
+        }
+        "icli reminders hashtag delete" => Some(
+            "Detach and soft-delete one hashtag. The required --yes flag confirms the remote write.",
+        ),
+        "icli reminders attachment list" => Some(
+            "Read attachments linked to one reminder. URL attachment links are decoded when Apple returns their encoded form.",
+        ),
+        "icli reminders attachment create-url" => Some(
+            "Attach an HTTP or HTTPS URL to one reminder. This creates a URL attachment record, not an uploaded file.",
+        ),
+        "icli reminders attachment update" => {
+            Some("Update the URL or UTI of a URL attachment linked to the selected reminder.")
+        }
+        "icli reminders attachment delete" => Some(
+            "Detach and soft-delete one attachment. The required --yes flag confirms the remote write.",
+        ),
+        "icli reminders recurrence list" => Some("Read recurrence rules attached to one reminder."),
+        "icli reminders recurrence create" => Some(
+            "Attach a daily, weekly, monthly, or yearly recurrence rule. An occurrence count of zero means no fixed count.",
+        ),
+        "icli reminders recurrence update" => {
+            Some("Update supplied fields of a recurrence rule attached to the selected reminder.")
+        }
+        "icli reminders recurrence delete" => Some(
+            "Detach and soft-delete one recurrence rule. The required --yes flag confirms the remote write.",
         ),
         "icli auth remove" => Some(
-            "Remove the local account configuration and saved credential. Remote Apple data is unaffected. Removing the default selects the sole remaining account; with several remaining accounts the default is cleared and exact selection commands are returned.",
+            "Remove the local account, app-specific password, pending Apple challenge, and trusted session including its credential chunks. Remote Apple data is unaffected. Removing the default selects the sole remaining account; with several remaining accounts the default is cleared and exact selection commands are returned.",
         ),
         "icli contacts list" | "icli contacts get" => Some(
             "Read contact summaries containing uid, name, emails, phones, and birthday. Use --include PROPERTY, repeat it, or comma-separate property names to add values under properties. Names are case-insensitive. --include all returns every property, including Apple X- fields, custom fields, repeated values, and parameters. Grouped Apple properties retain their full names; requesting ADR also selects grouped names such as ITEM1.ADR. Requested properties absent from the result are reported. List reads the address book, sorts contacts by UID, and applies --skip before --limit. These commands do not modify cards.",
@@ -173,14 +297,69 @@ fn enrich(mut command: Command, path: String) -> Command {
         "icli auth add" => {
             "icli auth add person@icloud.com --password-stdin < password.txt\nicli auth add person@icloud.com"
         }
-        "icli auth check" if cfg!(windows) => {
-            "icli auth check --email person@icloud.com\nGet-Content -Raw password.txt | icli auth check --email person@icloud.com --password-stdin"
+        "icli auth app-password" => {
+            "icli auth app-password person@icloud.com\nicli auth check --email person@icloud.com --app-password"
         }
+        "icli auth verify" => {
+            "icli auth verify person@icloud.com --code-stdin\nicli auth verify --email person@icloud.com --code-stdin"
+        }
+        "icli auth resend" => "icli auth resend person@icloud.com --method sms",
+        "icli auth refresh" => "icli auth refresh\nicli auth refresh --email person@icloud.com",
         "icli auth check" => {
-            "icli auth check --email person@icloud.com\nicli auth check --email person@icloud.com --password-stdin < password.txt"
+            "icli auth check\nicli auth check --email person@icloud.com --app-password"
         }
         "icli auth list" => "icli auth list --json",
         "icli auth remove" => "icli auth remove person@icloud.com",
+        "icli reminders lists" => "icli reminders lists --email person@icloud.com",
+        "icli reminders list" => {
+            "icli reminders list --email person@icloud.com --limit 100\nicli reminders list --email person@icloud.com --skip 100 --limit 100"
+        }
+        "icli reminders get" => "icli reminders get REMINDER_ID --json",
+        "icli reminders create" => {
+            "icli reminders create --list LIST_ID --title \"Buy oat milk\" --due 2026-10-25\nicli reminders create --list LIST_ID --title \"Call Alex\" --due 2026-10-25T10:00:00+02:00 --priority 1"
+        }
+        "icli reminders update" => {
+            "icli reminders update REMINDER_ID --title \"Updated title\"\nicli reminders update REMINDER_ID --clear-due --completed true"
+        }
+        "icli reminders set-status" => {
+            "icli reminders set-status REMINDER_ID completed\nicli reminders set-status REMINDER_ID incomplete"
+        }
+        "icli reminders delete" => "icli reminders delete REMINDER_ID --yes",
+        "icli reminders snapshot" => "icli reminders snapshot --list LIST_ID --json",
+        "icli reminders changes" => "icli reminders changes --since CURSOR --limit 100",
+        "icli reminders sync-cursor" => "icli reminders sync-cursor --json",
+        "icli reminders alarm list" => "icli reminders alarm list REMINDER_ID",
+        "icli reminders alarm add-location" => {
+            "icli reminders alarm add-location REMINDER_ID --title Home --address \"Home\" --latitude 37.3318 --longitude -122.0312 --proximity arriving"
+        }
+        "icli reminders hashtag list" => "icli reminders hashtag list REMINDER_ID",
+        "icli reminders hashtag create" => "icli reminders hashtag create REMINDER_ID errands",
+        "icli reminders hashtag update" => {
+            "icli reminders hashtag update REMINDER_ID HASHTAG_ID errands"
+        }
+        "icli reminders hashtag delete" => {
+            "icli reminders hashtag delete REMINDER_ID HASHTAG_ID --yes"
+        }
+        "icli reminders attachment list" => "icli reminders attachment list REMINDER_ID",
+        "icli reminders attachment create-url" => {
+            "icli reminders attachment create-url REMINDER_ID --url https://example.com/checklist"
+        }
+        "icli reminders attachment update" => {
+            "icli reminders attachment update REMINDER_ID ATTACHMENT_ID --url https://example.com/new-checklist"
+        }
+        "icli reminders attachment delete" => {
+            "icli reminders attachment delete REMINDER_ID ATTACHMENT_ID --yes"
+        }
+        "icli reminders recurrence list" => "icli reminders recurrence list REMINDER_ID",
+        "icli reminders recurrence create" => {
+            "icli reminders recurrence create REMINDER_ID --frequency weekly --interval 1"
+        }
+        "icli reminders recurrence update" => {
+            "icli reminders recurrence update REMINDER_ID RULE_ID --frequency monthly"
+        }
+        "icli reminders recurrence delete" => {
+            "icli reminders recurrence delete REMINDER_ID RULE_ID --yes"
+        }
         "icli calendar list" => {
             "icli calendar list --email person@icloud.com --include href,dsid,color"
         }
@@ -272,12 +451,51 @@ fn enrich(mut command: Command, path: String) -> Command {
         }
         "icli config default-user" => "object: default_user",
         "icli config format" => "object: response_format",
-        "icli auth add" => "object: email, default_user, credentials_saved=true, verified=false",
+        "icli auth add" | "icli auth verify" | "icli auth resend" | "icli auth refresh" => {
+            "object: email, auth_state=verification_required|refresh_required|authenticated, apple_account_authenticated, trusted_session_saved, verification_method. A successful pending sign-in is exit 0, not an authentication failure."
+        }
+        "icli auth app-password" => {
+            "object: email, default_user, app_specific_password_saved=true, verified=false"
+        }
         "icli auth list" => "array of {email, default}; passwords are never returned",
         "icli auth remove" => "object: email, removed=true, default_user, accounts=[{email}]",
         "icli auth check" => {
-            "array of {service, status, authenticated, error?}; service is mail/calendar/contacts; failures have structured error details"
+            "default: object describing the valid Apple session. With --app-password: array of {service, status, authenticated, error?} for mail/calendar/contacts"
         }
+        "icli reminders lists" => "array of {id, name, count}",
+        "icli reminders list" => "array of {id, title, list_id, list, completed, due}",
+        "icli reminders get"
+        | "icli reminders create"
+        | "icli reminders update"
+        | "icli reminders set-status" => {
+            "object: id, title, notes, list_id, parent_id, due, completed, priority, flagged, all_day, related IDs, timestamps"
+        }
+        "icli reminders delete" => "object: id, deleted=true",
+        "icli reminders snapshot" => {
+            "object: list, records={reminders, alarms, alarm_triggers, attachments, hashtags, recurrence_rules}"
+        }
+        "icli reminders changes" => {
+            "object: changes=[updated/deleted events], cursor, more_available"
+        }
+        "icli reminders sync-cursor" => "object: cursor (opaque Apple CloudKit token)",
+        "icli reminders alarm list"
+        | "icli reminders hashtag list"
+        | "icli reminders attachment list"
+        | "icli reminders recurrence list" => {
+            "array of related records attached to the selected reminder"
+        }
+        "icli reminders alarm add-location" => "object: alarm, trigger",
+        "icli reminders hashtag create"
+        | "icli reminders hashtag update"
+        | "icli reminders attachment create-url"
+        | "icli reminders attachment update"
+        | "icli reminders recurrence create"
+        | "icli reminders recurrence update" => {
+            "object: related record with stable ID and selected fields"
+        }
+        "icli reminders hashtag delete"
+        | "icli reminders attachment delete"
+        | "icli reminders recurrence delete" => "object: id, deleted=true",
         "icli calendar list" => {
             "array of {name, id, href?, dsid?, color?}; optional fields are selected with --include; color is canonical uppercase #RRGGBBAA or null"
         }
@@ -350,7 +568,7 @@ fn enrich(mut command: Command, path: String) -> Command {
     } else {
         ""
     };
-    let common = "Output: --json overrides --format, which overrides saved config, then agent is the default. JSON always contains ok, status, action, data, next_steps, warnings, error. Success has error=null; errors provide code, message, hint, help, retryable. Agent output labels Status, Result, IDs, Warnings, Next command. CSV lists use one row per result; mutations use one row; batches use one row per item. response_status is the overall result; status retains a resource/item status when present. Complete failures go to stderr; successful and partial results go to stdout. Explicit --help and --version remain readable text. Exit codes: 0 success, 1 operation failure, 2 invalid command/arguments, 3 partial success. Partial operations retain completed changes; inspect each item before retrying.\n\nAccount selection: use --email EMAIL, otherwise the saved default, otherwise the sole configured account. Multiple accounts without a default require an explicit choice. Calendar positional account forms remain compatibility aliases.\n\nRecovery: follow returned error.hint/Next command and scoped --help. Ambiguous resources return candidates; choose an exact identifier instead of retrying the same selector.";
+    let common = "Output: --json overrides --format, which overrides saved config, then agent is the default. JSON always contains ok, status, action, data, next_steps, warnings, error. Success has error=null; errors provide code, message, hint, help, retryable. Agent output labels Status, Result, IDs, Warnings, Next command. CSV lists use one row per result; mutations use one row; batches use one row per item. response_status is the overall result; status retains a resource/item status when present. Complete failures go to stderr; successful and partial results go to stdout. Explicit --help and --version remain readable text. Exit codes: 0 success, 1 operation failure, 2 invalid command/arguments, 3 partial success. Partial operations retain completed changes; inspect each item before retrying.\n\nAccount selection: All services use --email EMAIL, otherwise the saved default, otherwise the sole configured account. Apple sessions and app-specific passwords belong to the same account; a missing service credential returns its setup command. Calendar positional account forms remain compatibility aliases.\n\nRecovery: follow returned error.hint/Next command and scoped --help. Ambiguous resources return candidates; choose an exact identifier instead of retrying the same selector.";
     let pagination = if matches!(
         path.as_str(),
         "icli calendar events search"
@@ -371,7 +589,7 @@ fn enrich(mut command: Command, path: String) -> Command {
         String::new()
     };
     if path == "icli" {
-        command = command.after_help(format!("Tasks:\n  Update iCLI: update [--check]\n  Set up access: auth add, then auth check\n  Select account/output: config default-user, config format\n  Find calendars: calendar list; set color/share: calendar color, calendar share\n  Read/search events: calendar events list|search|get; write: create|update|delete|import\n  Read/search/send mail: mail folders|list|search|get|download|create|send|update|move|delete\n  Read/search contacts: contacts list|search|get|me; write: create|update|delete; groups\n  Discover contact properties: contacts help\n\nRun icli <command> --help for complete instructions.\n\n{common}"));
+        command = command.after_help(format!("Tasks:\n  Update iCLI: update [--check]\n  Set up Mail/Calendar/Contacts: auth app-password, then auth check --app-password\n  Set up Apple Reminders: auth add EMAIL, then auth verify EMAIL CODE\n  Select account/output: config default-user, config format\n  Find calendars: calendar list; set color/share: calendar color, calendar share\n  Read/search events: calendar events list|search|get; write: create|update|delete|import\n  Read/search/send mail: mail folders|list|search|get|download|create|send|update|move|delete\n  Read/search contacts: contacts list|search|get|me; write: create|update|delete; groups\n  Read and manage Apple Reminders: reminders\n  Discover contact properties: contacts help\n\nRun icli <command> --help for complete instructions.\n\n{common}"));
     } else if !example.is_empty() {
         let previous = command
             .get_after_help()

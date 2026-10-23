@@ -187,3 +187,102 @@ fn noninteractive_auth_add_fails_without_prompting_or_storing_credentials() {
     let value: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(value["data"], serde_json::json!([]));
 }
+
+#[test]
+fn auth_commands_explain_the_split_flow_and_app_password_migration() {
+    let sandbox = Sandbox::new();
+    let result = sandbox.run(&["auth", "--help"]);
+    assert!(result.status.success());
+    let help = String::from_utf8(result.stdout).unwrap();
+    for command in [
+        "add",
+        "verify",
+        "resend",
+        "check",
+        "refresh",
+        "app-password",
+    ] {
+        assert!(help.contains(command), "{command} missing from auth help");
+    }
+    for command in [
+        "add",
+        "verify",
+        "resend",
+        "check",
+        "refresh",
+        "app-password",
+        "apple-login",
+    ] {
+        let result = sandbox.run(&["auth", command, "--help"]);
+        assert!(result.status.success(), "{command}");
+        assert!(result.stderr.is_empty());
+    }
+    let result = sandbox.run(&["auth", "add", "--help"]);
+    let help = String::from_utf8(result.stdout).unwrap();
+    assert!(help.contains("verification_required"));
+    assert!(help.contains("app-specific passwords use auth app-password"));
+}
+
+#[test]
+fn new_auth_inputs_fail_locally_without_prompts_or_creating_an_account() {
+    let sandbox = Sandbox::new();
+    for command in ["add", "app-password", "apple-login", "verify"] {
+        let result = sandbox.run(&["--json", "auth", command, "synthetic@example.invalid"]);
+        assert_eq!(result.status.code(), Some(2), "{command}");
+        assert!(result.stdout.is_empty());
+        let envelope: serde_json::Value = serde_json::from_slice(&result.stderr).unwrap();
+        assert_eq!(envelope["error"]["code"], "invalid_input");
+        assert!(
+            envelope["error"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("stdin")
+        );
+        let result = sandbox.run(&["--json", "auth", "list"]);
+        let envelope: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(envelope["data"], serde_json::json!([]));
+    }
+}
+
+#[test]
+fn auth_secret_sources_and_methods_are_exclusive_with_scoped_errors() {
+    let sandbox = Sandbox::new();
+    for arguments in [
+        vec![
+            "verify",
+            "synthetic@example.invalid",
+            "012345",
+            "--code-stdin",
+        ],
+        vec![
+            "verify",
+            "--email",
+            "synthetic@example.invalid",
+            "--code",
+            "012345",
+            "--code-stdin",
+        ],
+        vec![
+            "app-password",
+            "synthetic@example.invalid",
+            "--password-stdin",
+            "--password",
+            "synthetic",
+        ],
+        vec!["resend", "--method", "invalid"],
+        vec!["check", "--password-stdin"],
+        vec!["refresh", "--password", "synthetic"],
+    ] {
+        let mut args = vec!["--json", "auth"];
+        args.extend(arguments.iter().copied());
+        let result = sandbox.run(&args);
+        assert_eq!(result.status.code(), Some(2), "{arguments:?}");
+        assert!(result.stdout.is_empty());
+        let envelope: serde_json::Value = serde_json::from_slice(&result.stderr).unwrap();
+        assert_eq!(envelope["error"]["code"], "invalid_arguments");
+        assert_eq!(
+            envelope["error"]["help"],
+            format!("icli auth {} --help", arguments[0])
+        );
+    }
+}

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
+pub mod apple_auth;
 mod help;
 mod response;
 mod update;
@@ -24,8 +25,8 @@ use std::{
 #[command(
     name = "icli",
     version,
-    about = "Read and manage iCloud Calendar, Mail, and Contacts",
-    long_about = "Use iCLI to read and manage Apple iCloud Calendar, Mail, and Contacts. Start with `icli calendar list` to see available calendars and their IDs. Use `icli calendar create`, `icli calendar update`, and `icli calendar delete` to manage calendars. Use `icli calendar events` to list, search, retrieve, create, update, delete, or import events.\n\nAdd an account with `icli auth add EMAIL`. Set a default account with `icli config default-user EMAIL` so commands can use it without an email argument. Output defaults to agent-readable text; select `agent`, `csv`, or `json` with `--format`, or use `--json` to force JSON. Global output options can go before or after the command.",
+    about = "Read and manage iCloud Calendar, Contacts, Mail, and Reminders",
+    long_about = "Read and manage iCloud Calendar, Mail, Contacts, and Apple Reminders. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
     before_help = concat!(
         "Running icli v",
         env!("CARGO_PKG_VERSION"),
@@ -33,7 +34,7 @@ use std::{
         env!("ICLI_RELEASE_DATE"),
         "."
     ),
-    override_usage = "icli <update|config|auth|calendar|agenda|calender|mail|contacts|help> [OPTIONS]",
+    override_usage = "icli <update|config|auth|calendar|agenda|calender|mail|contacts|reminders|help> [OPTIONS]",
     after_help = "Run `icli <command> --help` to read that command's instructions and accepted arguments. Put command-specific options after the command.\n\nOptions available: --json, --format <agent|csv|json>, --help, --version."
 )]
 struct Cli {
@@ -62,7 +63,7 @@ enum Command {
     },
     #[command(
         about = "Set the default account or response format",
-        long_about = "Use the config commands to choose which configured iCloud account commands use by default and which response format they print. Set the default account with `icli config default-user EMAIL`; EMAIL must already have been added with `icli auth add`. Set the saved response format to `agent`, `csv`, or `json` with `icli config format FORMAT`. These settings are stored in iCLI's local configuration.",
+        long_about = "Use the config commands to choose which configured iCloud account commands use by default and which response format they print. Set the default account with `icli config default-user EMAIL`; EMAIL must already be configured with `icli auth add` or `icli auth app-password`. Set the saved response format to `agent`, `csv`, or `json` with `icli config format FORMAT`. These settings are stored in iCLI's local configuration.",
         after_help = "Run `icli config <subcommand> --help` to read that operation's instructions and accepted arguments.\n\nOptions available: --json, --format <agent|csv|json>, --help."
     )]
     Config {
@@ -70,9 +71,9 @@ enum Command {
         command: ConfigCommand,
     },
     #[command(
-        about = "Add, check, list, or remove iCloud accounts",
-        long_about = "All iCLI connections to iCloud use Apple app-specific passwords. These are different from your normal iCloud password. Create one at https://account.apple.com/ under Sign-In and Security > App-Specific Passwords. Apple's instructions: https://support.apple.com/en-us/102654. App-specific passwords require two-factor authentication.\n\nWhen your iCloud email and app-specific password are ready, run `icli auth add EMAIL`. iCLI saves the password locally without contacting Apple. Run `icli auth check` to test services separately. Omit PASSWORD to enter it at a hidden prompt.",
-        after_help = "Other commands: `icli auth list`, `icli auth check [EMAIL]`, and `icli auth remove EMAIL`.\n\nOptions: --json, --format <agent|csv|json>, --help."
+        about = "Manage app-specific-password accounts and Apple private-service sign-in",
+        long_about = "Start Apple Account sign-in with auth add, finish its code challenge with auth verify, inspect the saved session with auth check, and renew it with auth refresh. Commands return structured state and recovery instructions. Save a recommended app-specific password for Mail, Calendar, and Contacts with auth app-password. Passwords, pending challenges, and trusted sessions are kept in the OS credential store; the Apple Account password itself is never saved.",
+        after_help = "Commands: add, verify, resend, check, refresh, app-password, list, remove. auth apple-login is a deprecated alias for auth add. Run each command with --help for input options and side effects."
     )]
     Auth {
         #[command(subcommand)]
@@ -108,12 +109,28 @@ enum Command {
         #[command(subcommand)]
         action: Option<ContactsCommand>,
     },
+    #[command(
+        about = "Read and manage Apple Reminders",
+        long_about = "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when required; the saved trusted session is reused. The first read may request trusted-device approval for encrypted Reminders data. The command group supports reminder and list reads, reminder create/update/complete/delete, snapshots and incremental sync, alarms, hashtags, URL attachments, and recurrence rules. This is Apple Reminders, not Calendar tasks.",
+        after_help = "Use `icli reminders lists` and `icli reminders list` to inspect data before writing. IDs are stable CloudKit record names. Remote deletes require `--yes`. All writes target Apple CloudKit and are not rolled back if a later separate operation fails."
+    )]
+    Reminders {
+        #[arg(
+            long,
+            value_name = "EMAIL",
+            global = true,
+            help = "Apple Account address used for Reminders sign-in"
+        )]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<RemindersCommand>,
+    },
 }
 #[derive(Subcommand)]
 enum ConfigCommand {
     #[command(
         about = "Choose the account used when a command omits EMAIL",
-        long_about = "Set EMAIL as the account iCLI selects when a command does not specify an account. The account must already be configured with `icli auth add EMAIL`. This setting is useful when more than one account is configured; commands that include EMAIL continue to use the explicitly selected account.",
+        long_about = "Set EMAIL as the account iCLI selects when a command does not specify an account. The account must already be configured with `icli auth add EMAIL` or `icli auth app-password EMAIL`. This setting is useful when more than one account is configured; commands that include EMAIL continue to use the explicitly selected account.",
         after_help = "Argument: EMAIL is the email address of an account already added to iCLI.\n\nOptions available: --json, --format <agent|csv|json>, --help."
     )]
     DefaultUser { email: String },
@@ -132,58 +149,338 @@ enum OutputFormat {
     Csv,
     Json,
 }
+#[derive(Args)]
+struct AuthCredentialArgs {
+    #[arg(value_name = "EMAIL", required_unless_present = "email_flag")]
+    email: Option<String>,
+    #[arg(value_name = "PASSWORD")]
+    password: Option<String>,
+    #[arg(long = "email", value_name = "EMAIL", conflicts_with = "email")]
+    email_flag: Option<String>,
+    #[arg(
+        long = "password",
+        value_name = "PASSWORD",
+        conflicts_with = "password"
+    )]
+    password_flag: Option<String>,
+    #[arg(long, conflicts_with_all = ["password", "password_flag"], help = "Read the password from stdin; remove only its trailing line ending")]
+    password_stdin: bool,
+}
 #[derive(Subcommand)]
 enum AuthCommand {
     #[command(
-        about = "Save an iCloud account credential",
-        long_about = "Add EMAIL and its iCloud app-specific password. iCLI saves credentials locally without contacting Apple, using the operating system credential store. If PASSWORD is omitted, iCLI asks for it without displaying the characters. Supplying PASSWORD as an argument is supported, but may expose it in shell history or process listings. iCloud requires an app-specific password for third-party access.",
-        after_help = "Arguments: EMAIL is the iCloud account address. PASSWORD is optional; omit it to use the hidden password prompt. The positional form is `icli auth add EMAIL [PASSWORD]`; the equivalent options are `--email EMAIL --password PASSWORD`.\n\nOptions available: --email, --password, --json, --format <agent|csv|json>, --help."
+        visible_alias = "apple-login",
+        about = "Start Apple Account sign-in; submit its code with auth verify"
     )]
-    Add {
-        #[arg(value_name = "EMAIL", required_unless_present = "email_flag")]
+    Add(AuthCredentialArgs),
+    #[command(about = "Save or replace an app-specific password for Mail, Calendar, and Contacts")]
+    AppPassword(AuthCredentialArgs),
+    #[command(about = "Submit the verification code for a pending Apple sign-in")]
+    Verify {
+        #[arg(value_name = "EMAIL")]
         email: Option<String>,
-        #[arg(value_name = "PASSWORD")]
-        password: Option<String>,
-        #[arg(long = "email", value_name = "EMAIL", conflicts_with = "email")]
+        #[arg(value_name = "CODE", conflicts_with_all = ["code_flag", "code_stdin"])]
+        code: Option<String>,
+        #[arg(long = "email", conflicts_with = "email")]
         email_flag: Option<String>,
-        #[arg(long, value_name = "PASSWORD", conflicts_with = "password")]
-        password_flag: Option<String>,
-        #[arg(long, conflicts_with_all = ["password", "password_flag"], help = "Read the app-specific password from stdin; trailing line ending is removed")]
-        password_stdin: bool,
+        #[arg(long = "code", value_name = "CODE", conflicts_with = "code_stdin")]
+        code_flag: Option<String>,
+        #[arg(long, help = "Read the six-digit code from stdin")]
+        code_stdin: bool,
     },
-    #[command(
-        about = "List configured account addresses",
-        long_about = "Show the iCloud email addresses configured in iCLI. Passwords are not displayed. Add an account with `icli auth add EMAIL`; remove one with `icli auth remove EMAIL`.",
-        after_help = "Options available: --json, --format <agent|csv|json>, --help."
-    )]
+    #[command(about = "Request another verification code for a pending sign-in")]
+    Resend {
+        #[arg(value_name = "EMAIL")]
+        email: Option<String>,
+        #[arg(long = "email", conflicts_with = "email")]
+        email_flag: Option<String>,
+        #[arg(long, value_enum, default_value = "device")]
+        method: apple_auth::VerificationMethod,
+    },
+    #[command(about = "Renew the selected Apple session using saved tokens")]
+    Refresh {
+        #[arg(value_name = "EMAIL")]
+        email: Option<String>,
+        #[arg(long = "email", conflicts_with = "email")]
+        email_flag: Option<String>,
+    },
+    #[command(about = "List configured accounts; never display secrets")]
     List,
-    #[command(
-        about = "Remove a configured account",
-        long_about = "Remove EMAIL from iCLI's account configuration and delete its saved password from the operating system credential store. This does not delete the Apple Account or any calendars, events, mail, or contacts stored in iCloud.",
-        after_help = "Argument: EMAIL is the address of the configured account to remove.\n\nOptions available: --email, --json, --format <agent|csv|json>, --help."
-    )]
+    #[command(about = "Remove the account and its saved credentials and sessions locally")]
     Remove {
         #[arg(value_name = "EMAIL", required_unless_present = "email_flag")]
         email: Option<String>,
-        #[arg(long = "email", value_name = "EMAIL", conflicts_with = "email")]
+        #[arg(long = "email", conflicts_with = "email")]
         email_flag: Option<String>,
     },
-    #[command(
-        about = "Check Mail, Calendar, and Contacts authentication",
-        long_about = "Verify authentication independently for Mail, Calendar, and Contacts. Checks are read-only and do not verify writes. If PASSWORD is supplied, iCLI checks that password directly; otherwise it uses the saved password. This check does not add or change account credentials.",
-        after_help = "EMAIL is optional when a default account is configured or only one account is available. PASSWORD is optional; provide it after EMAIL or use `--password PASSWORD`.\n\nOptions available: --email, --password, --json, --format <agent|csv|json>, --help."
-    )]
+    #[command(about = "Check a saved Apple session, or app-password services with --app-password")]
     Check {
         #[arg(value_name = "EMAIL")]
         email: Option<String>,
-        #[arg(value_name = "PASSWORD")]
+        #[arg(value_name = "PASSWORD", requires = "app_password")]
         password: Option<String>,
-        #[arg(long = "email", value_name = "EMAIL", conflicts_with = "email")]
+        #[arg(long = "email", conflicts_with = "email")]
         email_flag: Option<String>,
-        #[arg(long, value_name = "PASSWORD", conflicts_with = "password")]
+        #[arg(
+            long = "password",
+            value_name = "PASSWORD",
+            conflicts_with = "password",
+            requires = "app_password"
+        )]
         password_flag: Option<String>,
-        #[arg(long, conflicts_with_all = ["password", "password_flag"], help = "Read the app-specific password from stdin; trailing line ending is removed")]
+        #[arg(long, conflicts_with_all = ["password", "password_flag"], requires = "app_password")]
         password_stdin: bool,
+        #[arg(
+            long,
+            help = "Check Mail, Calendar, and Contacts using an app-specific password"
+        )]
+        app_password: bool,
+    },
+}
+#[derive(Subcommand)]
+enum RemindersCommand {
+    #[command(
+        about = "List Reminders lists",
+        long_about = "Read Apple Reminders lists from the selected Apple Account. Output includes each list name and its stable service ID. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
+        after_help = "Options: --email EMAIL, --json, --format <agent|csv|json>, --help."
+    )]
+    Lists,
+    #[command(
+        about = "List reminders across all lists",
+        long_about = "Read active and completed Apple Reminders across all lists. Output includes reminder ID, title, list, completion state, and due date where available. Results default to the first 100 reminders; use --skip and --limit to page through more. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
+        after_help = "Options: --skip N (default 0), --limit N (default 100), --email EMAIL, --json, --format <agent|csv|json>, --help. This command does not change reminder data."
+    )]
+    List {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+    },
+    #[command(about = "Read one reminder by its stable ID")]
+    Get { id: String },
+    #[command(about = "Create a reminder in a list")]
+    Create {
+        #[arg(long, value_name = "LIST_ID", required = true)]
+        list: String,
+        #[arg(long, value_name = "TITLE", required = true)]
+        title: String,
+        #[arg(long, value_name = "TEXT", default_value = "")]
+        notes: String,
+        #[arg(
+            long,
+            value_name = "DATE_OR_TIME",
+            help = "Due date YYYY-MM-DD or RFC3339 date-time"
+        )]
+        due: Option<String>,
+        #[arg(long)]
+        all_day: bool,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(i64).range(0..=9))]
+        priority: i64,
+        #[arg(long)]
+        flagged: bool,
+    },
+    #[command(about = "Update selected fields on one reminder")]
+    Update {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+        #[arg(
+            long,
+            value_name = "DATE_OR_TIME",
+            help = "Due date YYYY-MM-DD or RFC3339 date-time"
+        )]
+        due: Option<String>,
+        #[arg(long, conflicts_with = "due")]
+        clear_due: bool,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..=9))]
+        priority: Option<i64>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        flagged: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        completed: Option<bool>,
+        #[arg(long, action = clap::ArgAction::Set)]
+        all_day: Option<bool>,
+    },
+    #[command(about = "Mark a reminder complete or incomplete")]
+    SetStatus {
+        id: String,
+        #[arg(value_enum)]
+        status: ReminderStatus,
+    },
+    #[command(about = "Delete one reminder; requires --yes")]
+    Delete {
+        id: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    #[command(about = "Read a full snapshot of one list and its related records")]
+    Snapshot {
+        #[arg(long, value_name = "LIST_ID", required = true)]
+        list: String,
+        #[arg(long, default_value_t = 500)]
+        limit: usize,
+    },
+    #[command(about = "Read incremental reminder changes from a sync cursor")]
+    Changes {
+        #[arg(long, value_name = "CURSOR")]
+        since: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    #[command(about = "Read the current opaque Reminders sync cursor")]
+    SyncCursor,
+    #[command(about = "List or create reminder alarms")]
+    Alarm {
+        #[command(subcommand)]
+        action: ReminderAlarmCommand,
+    },
+    #[command(about = "List and manage reminder hashtags")]
+    Hashtag {
+        #[command(subcommand)]
+        action: ReminderHashtagCommand,
+    },
+    #[command(about = "List and manage reminder attachments")]
+    Attachment {
+        #[command(subcommand)]
+        action: ReminderAttachmentCommand,
+    },
+    #[command(about = "List and manage recurrence rules")]
+    Recurrence {
+        #[command(subcommand)]
+        action: ReminderRecurrenceCommand,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReminderStatus {
+    Completed,
+    Incomplete,
+}
+
+#[derive(Subcommand)]
+enum ReminderAlarmCommand {
+    #[command(about = "List alarms on one reminder")]
+    List { id: String },
+    #[command(about = "Add a location alarm to one reminder")]
+    AddLocation {
+        id: String,
+        #[arg(long, default_value = "")]
+        title: String,
+        #[arg(long, default_value = "")]
+        address: String,
+        #[arg(long)]
+        latitude: f64,
+        #[arg(long)]
+        longitude: f64,
+        #[arg(long, default_value_t = 100.0)]
+        radius: f64,
+        #[arg(long, value_enum, default_value = "arriving")]
+        proximity: ReminderProximity,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReminderProximity {
+    Arriving,
+    Leaving,
+}
+
+#[derive(Subcommand)]
+enum ReminderHashtagCommand {
+    #[command(about = "List hashtags attached to a reminder")]
+    List { id: String },
+    #[command(about = "Attach a hashtag to a reminder")]
+    Create { id: String, name: String },
+    #[command(about = "Rename a hashtag")]
+    Update {
+        id: String,
+        hashtag_id: String,
+        name: String,
+    },
+    #[command(about = "Remove a hashtag; requires --yes")]
+    Delete {
+        id: String,
+        hashtag_id: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReminderAttachmentCommand {
+    #[command(about = "List attachments on a reminder")]
+    List { id: String },
+    #[command(about = "Attach a URL to a reminder")]
+    CreateUrl {
+        id: String,
+        #[arg(long)]
+        url: String,
+        #[arg(long, default_value = "public.url")]
+        uti: String,
+    },
+    #[command(about = "Update a URL attachment")]
+    Update {
+        id: String,
+        attachment_id: String,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        uti: Option<String>,
+    },
+    #[command(about = "Remove an attachment; requires --yes")]
+    Delete {
+        id: String,
+        attachment_id: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum ReminderFrequency {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+#[derive(Subcommand)]
+enum ReminderRecurrenceCommand {
+    #[command(about = "List recurrence rules on a reminder")]
+    List { id: String },
+    #[command(about = "Add a recurrence rule")]
+    Create {
+        id: String,
+        #[arg(long, value_enum, default_value = "daily")]
+        frequency: ReminderFrequency,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(i64).range(1..))]
+        interval: i64,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(i64).range(0..))]
+        occurrence_count: i64,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(i64).range(0..=6))]
+        first_day_of_week: i64,
+    },
+    #[command(about = "Update a recurrence rule")]
+    Update {
+        id: String,
+        rule_id: String,
+        #[arg(long, value_enum)]
+        frequency: Option<ReminderFrequency>,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        interval: Option<i64>,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        occurrence_count: Option<i64>,
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..=6))]
+        first_day_of_week: Option<i64>,
+    },
+    #[command(about = "Remove a recurrence rule; requires --yes")]
+    Delete {
+        id: String,
+        rule_id: String,
+        #[arg(long, required = true)]
+        yes: bool,
     },
 }
 #[allow(clippy::large_enum_variant)]
@@ -2210,6 +2507,13 @@ fn save_config(c: &Config) -> Result<()> {
     Ok(())
 }
 fn add_account_config(config: &mut Config, email: &str) {
+    if config
+        .accounts
+        .iter()
+        .any(|a| a.email.eq_ignore_ascii_case(email))
+    {
+        return;
+    }
     if config.accounts.is_empty() {
         config.default_user = Some(email.to_string());
     }
@@ -2242,6 +2546,179 @@ fn remove_account_config(config: &mut Config, email: &str) -> Result<()> {
 
 fn credential(email: &str) -> Result<keyring::Entry> {
     Ok(keyring::Entry::new("icli-icloud", email)?)
+}
+fn apple_session_credential(email: &str) -> Result<keyring::Entry> {
+    Ok(keyring::Entry::new("icli-apple-private-session", email)?)
+}
+fn apple_session_chunk_credential(
+    email: &str,
+    generation: &str,
+    index: usize,
+) -> Result<keyring::Entry> {
+    Ok(keyring::Entry::new(
+        "icli-apple-private-session",
+        &format!("{email}#session-{generation}-chunk-{index}"),
+    )?)
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AppleSessionManifest {
+    format_version: u8,
+    generation: String,
+    chunks: usize,
+}
+// Windows Credential Manager limits the credential blob to 2560 bytes. The
+// keyring crate encodes each stored password as UTF-16, so leave room for the
+// two-byte encoding and platform metadata.
+const APPLE_SESSION_CHUNK_BYTES: usize = 1000;
+
+fn save_apple_session(session: &apple_auth::SavedAppleSession) -> Result<()> {
+    let serialized = serde_json::to_string(session)
+        .context("Could not serialize the Apple private-service session")?;
+    let entry = apple_session_credential(&session.account)?;
+    let previous = match entry.get_password() {
+        Ok(raw) => serde_json::from_str::<AppleSessionManifest>(&raw)
+            .ok()
+            .filter(|m| m.format_version == 1),
+        Err(keyring::Error::NoEntry) => None,
+        Err(error) => {
+            return Err(error)
+                .context("Could not read previous Apple session from credential store");
+        }
+    };
+    let generation = uuid::Uuid::new_v4().to_string();
+    let chunks = split_secret_chunks(&serialized, APPLE_SESSION_CHUNK_BYTES);
+    if !(1..=1024).contains(&chunks.len()) {
+        bail!("Apple session exceeds the supported credential store size");
+    }
+    // Publish the index only after every chunk is stored. Keep the previous
+    // generation usable if a chunk or the final index write fails.
+    let write = (|| -> Result<()> {
+        for (index, chunk) in chunks.iter().enumerate() {
+            apple_session_chunk_credential(&session.account, &generation, index)?.set_password(chunk)
+                .with_context(|| format!("Could not save Apple session chunk {} to the operating system credential store", index + 1))?;
+        }
+        let manifest = serde_json::to_string(&AppleSessionManifest {
+            format_version: 1,
+            generation: generation.clone(),
+            chunks: chunks.len(),
+        })?;
+        entry
+            .set_password(&manifest)
+            .context("Could not save Apple session index to the operating system credential store")
+    })();
+    if write.is_err() {
+        clean_session_chunks(&session.account, &generation, chunks.len());
+        return write;
+    }
+    if let Some(previous) = previous {
+        clean_session_chunks(
+            &session.account,
+            &previous.generation,
+            previous.chunks.min(1024),
+        );
+    }
+    Ok(())
+}
+fn clean_session_chunks(email: &str, generation: &str, count: usize) {
+    for index in 0..count {
+        if let Ok(entry) = apple_session_chunk_credential(email, generation, index) {
+            let _ = entry.delete_credential();
+        }
+    }
+}
+fn delete_apple_session(email: &str) -> Result<()> {
+    let entry = apple_session_credential(email)?;
+    let raw = match entry.get_password() {
+        Ok(raw) => raw,
+        Err(keyring::Error::NoEntry) => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .context("Could not read Apple session from credential store before removal");
+        }
+    };
+    if let Ok(manifest) = serde_json::from_str::<AppleSessionManifest>(&raw) {
+        if manifest.format_version == 1 && (1..=1024).contains(&manifest.chunks) {
+            for index in 0..manifest.chunks {
+                match apple_session_chunk_credential(email, &manifest.generation, index)?
+                    .delete_credential()
+                {
+                    Ok(()) | Err(keyring::Error::NoEntry) => (),
+                    Err(error) => {
+                        return Err(error)
+                            .context("Could not delete Apple session chunk from credential store");
+                    }
+                }
+            }
+        }
+    }
+    entry
+        .delete_credential()
+        .context("Could not delete Apple session from credential store")
+}
+
+fn load_apple_connection(email: &str) -> Result<apple_auth::AppleConnection> {
+    let raw = apple_session_credential(email)?
+        .get_password()
+        .map_err(|error| match error {
+            keyring::Error::NoEntry => apple_auth::sign_in_required(
+                email,
+                "No saved Apple Account session; start sign-in with auth add",
+            ),
+            other => anyhow!(
+                "Could not read Apple session from the operating system credential store: {other}"
+            ),
+        })?;
+    let manifest = serde_json::from_str::<AppleSessionManifest>(&raw)
+        .ok()
+        .filter(|manifest| {
+            manifest.format_version == 1
+                && !manifest.generation.is_empty()
+                && (1..=1024).contains(&manifest.chunks)
+        });
+    let session: apple_auth::SavedAppleSession = if let Some(manifest) = manifest {
+        let mut serialized = String::new();
+        for index in 0..manifest.chunks {
+            let chunk = apple_session_chunk_credential(email, &manifest.generation, index)?
+                .get_password()
+                .map_err(|error| match error {
+                    keyring::Error::NoEntry => apple_auth::sign_in_required(email, format!("Saved Apple session is missing credential chunk {}; start sign-in again", index + 1)),
+                    other => anyhow!("Could not read Apple session chunk from credential store: {other}"),
+                })?;
+            serialized.push_str(&chunk);
+        }
+        serde_json::from_str(&serialized).map_err(|_| {
+            apple_auth::sign_in_required(
+                email,
+                "Saved Apple session data is invalid; start sign-in again",
+            )
+        })?
+    } else {
+        // Read sessions saved by the first implementation before chunking.
+        serde_json::from_str(&raw).map_err(|_| {
+            apple_auth::sign_in_required(
+                email,
+                "Saved Apple session data is invalid; start sign-in again",
+            )
+        })?
+    };
+    if !session.account.eq_ignore_ascii_case(email) {
+        bail!("Saved Apple session does not match the selected account");
+    }
+    apple_auth::AppleConnection::restore(session)
+}
+fn split_secret_chunks(value: &str, maximum_bytes: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut chunk = String::new();
+    for character in value.chars() {
+        if chunk.len() + character.len_utf8() > maximum_bytes {
+            chunks.push(std::mem::take(&mut chunk));
+        }
+        chunk.push(character);
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
 }
 fn account(email: Option<String>) -> Result<Account> {
     let c = load_config()?;
@@ -2276,7 +2753,10 @@ fn account(email: Option<String>) -> Result<Account> {
 fn secret(a: &Account) -> Result<String> {
     credential(&a.email)?
         .get_password()
-        .context("Could not read app-specific password from the system credential store")
+        .map_err(|error| match error {
+            keyring::Error::NoEntry => apple_auth::recovery(&a.email, "app_password_required", "Mail, Calendar, and Contacts require an app-specific password. Save one with auth app-password.", "app-password"),
+            other => anyhow!("Could not read app-specific password from the system credential store: {other}"),
+        })
 }
 fn format_value(value: &serde_json::Value) -> String {
     match value {
@@ -2563,6 +3043,11 @@ fn help_target() -> String {
                         "add",
                         "list",
                         "check",
+                        "verify",
+                        "refresh",
+                        "resend",
+                        "app-password",
+                        "apple-login",
                         "remove",
                         "default-user",
                         "format",
@@ -2590,6 +3075,15 @@ fn help_target() -> String {
                         }
                     }
                 }
+            }
+        }
+        Some("reminders") => {
+            path.push("reminders");
+            if let Some(action) = command_words
+                .get(1)
+                .filter(|v| ["lists", "list"].contains(&v.as_str()))
+            {
+                path.push(action);
             }
         }
         Some("calendar") => {
@@ -2621,6 +3115,12 @@ fn help_target() -> String {
 }
 
 fn next_step(error: &anyhow::Error) -> String {
+    if let Some(recovery) = error.downcast_ref::<apple_auth::AuthRecovery>() {
+        return recovery.next_command.clone();
+    }
+    if let Some(recovery) = error.downcast_ref::<apple_auth::RemindersAccessRecovery>() {
+        return recovery.next_command.clone();
+    }
     let message = format!("{error:#}");
     let lower = message.to_ascii_lowercase();
     if lower.contains("invalid search query") {
@@ -2643,16 +3143,16 @@ fn next_step(error: &anyhow::Error) -> String {
         return "Run `icli auth list`, then pass one listed address as EMAIL or set it with `icli config default-user EMAIL`.".into();
     }
     if lower.contains("account already configured") {
-        return "Run `icli auth check EMAIL` to check the saved credentials. To replace them, run `icli auth remove EMAIL`, then `icli auth add EMAIL --password-stdin` with the new password through stdin, then `icli auth check EMAIL`.".into();
+        return "Use `icli auth app-password EMAIL --password-stdin` to replace an app-specific password, or `icli auth add EMAIL --password-stdin` to restart Apple sign-in.".into();
     }
     if lower.contains("the account was not added") && lower.contains("401 unauthorized") {
-        return "The account was not saved. Retry `icli auth add EMAIL` with an Apple app-specific password, not your regular iCloud password. Create one at https://account.apple.com/; Apple's instructions are at https://support.apple.com/en-us/102654.".into();
+        return "The account was not saved. Retry `icli auth app-password EMAIL` with an Apple app-specific password. Create one at https://account.apple.com/; Apple's instructions are at https://support.apple.com/en-us/102654.".into();
     }
     if lower.contains("could not read app-specific password")
         || lower.contains("returned 401")
         || lower.contains("rejected authentication")
     {
-        return "Check the Apple Account email and app-specific password. If you supplied PASSWORD, retry with the correct app-specific password. If the saved password is wrong, run `icli auth remove EMAIL` and then `icli auth add EMAIL --password-stdin` with the new password through stdin; run `icli auth check EMAIL` after saving.".into();
+        return "Check the Apple Account email and app-specific password. If you supplied PASSWORD, retry with the correct app-specific password. If the saved password is wrong, run `icli auth app-password EMAIL --password-stdin` with the replacement through stdin; run `icli auth check EMAIL --app-password` after saving.".into();
     }
     if lower.contains("no calendar matched") {
         return "Run `icli calendar list`, then retry with the exact calendar name or ID shown."
@@ -2662,7 +3162,10 @@ fn next_step(error: &anyhow::Error) -> String {
         return "Confirm the event UID (not its title) with `icli calendar events list FROM TO --calendar CALENDAR`, then retry with that UID and calendar.".into();
     }
     if lower.contains("noninteractive") || lower.contains("password required") {
-        return "Use icli auth add EMAIL --password-stdin and provide the app-specific password through stdin; read icli auth add --help for setup instructions.".into();
+        return format!(
+            "Use {} --help for accepted inputs. Provide the secret through --password-stdin, or use --code-stdin with auth verify. Never paste a secret in chat.",
+            help_target()
+        );
     }
     if lower.contains("ambiguous") || lower.contains("more than one") {
         return "Select one of the exact hrefs in the candidate list; use the same argument that held the ambiguous selector.".into();
@@ -2801,6 +3304,12 @@ fn invocation_format() -> OutputFormat {
 }
 
 fn error_code(error: &anyhow::Error) -> (&'static str, Option<bool>) {
+    if let Some(recovery) = error.downcast_ref::<apple_auth::AuthRecovery>() {
+        return (recovery.code, Some(false));
+    }
+    if let Some(recovery) = error.downcast_ref::<apple_auth::RemindersAccessRecovery>() {
+        return (recovery.code, Some(false));
+    }
     let message = format!("{error:#}").to_ascii_lowercase();
     if message.contains("ambiguous") || message.contains("more than one") {
         ("ambiguous_resource", Some(false))
@@ -2878,6 +3387,12 @@ fn main() {
     };
     if let Err(error) = run_cli(cli) {
         let (code, retryable) = error_code(&error);
+        if let Some(recovery) = error.downcast_ref::<apple_auth::AuthRecovery>() {
+            response::next(&recovery.next_command);
+        }
+        if let Some(recovery) = error.downcast_ref::<apple_auth::RemindersAccessRecovery>() {
+            response::next(&recovery.next_command);
+        }
         response::failure(
             &format!("{error:#}"),
             code,
@@ -2891,33 +3406,97 @@ fn main() {
     std::process::exit(response::exit_code());
 }
 
-fn read_password(
+fn auth_email(email: Option<String>) -> Result<String> {
+    let email = email.context("Provide an email address")?;
+    let email = email.trim().to_lowercase();
+    if !is_simple_email(&email) {
+        bail!("Invalid account email address");
+    }
+    // Preserve the configured spelling because it is also the keyring entry
+    // name for accounts created by earlier CLI versions.
+    Ok(load_config()?
+        .accounts
+        .into_iter()
+        .find(|a| a.email.eq_ignore_ascii_case(&email))
+        .map(|a| a.email)
+        .unwrap_or(email))
+}
+
+fn selected_auth_email(email: Option<String>) -> Result<String> {
+    if let Some(email) = email {
+        auth_email(Some(email))
+    } else {
+        Ok(account(None)?.email)
+    }
+}
+
+fn read_auth_secret(
     value: Option<String>,
     from_stdin: bool,
-    saved: Option<&Account>,
-    prompt: bool,
+    label: &str,
+    stdin_flag: &str,
 ) -> Result<String> {
-    let password = if let Some(value) = value {
+    let secret = if let Some(value) = value {
         value
     } else if from_stdin {
         let mut value = String::new();
         std::io::stdin()
             .read_to_string(&mut value)
-            .context("Could not read password from stdin")?;
-        value.trim_end_matches(['\r', '\n']).to_string()
-    } else if let Some(account) = saved {
-        secret(account)?
-    } else if prompt && std::io::stdin().is_terminal() {
-        rpassword::prompt_password("Apple app-specific password: ")?
+            .with_context(|| format!("Could not read {label} from stdin"))?;
+        value.truncate(value.trim_end_matches(['\r', '\n']).len());
+        value
+    } else if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(format!("{label}: "))?
     } else {
         bail!(
-            "Password required in noninteractive mode. Use --password-stdin and pipe the Apple app-specific password through stdin."
-        )
+            "{label} required in noninteractive mode. Use --{stdin_flag} with a private secret source piped to stdin."
+        );
     };
-    if password.is_empty() {
-        bail!("App-specific password must not be empty");
+    if secret.is_empty() {
+        bail!("{label} must not be empty");
     }
-    Ok(password)
+    Ok(secret)
+}
+
+fn output_auth_state(
+    connection: &apple_auth::AppleConnection,
+    format: OutputFormat,
+    title: &str,
+) -> Result<()> {
+    let email = &connection.session.account;
+    let pending = connection.session.pending.as_ref();
+    match connection.auth_state() {
+        "verification_required" => response::next(format!(
+            "icli auth verify {} --code-stdin",
+            cli_quote(email)
+        )),
+        "refresh_required" => response::next(format!("icli auth refresh {}", cli_quote(email))),
+        _ => response::next(
+            "Retry the command that required authentication, or run icli reminders lists.",
+        ),
+    }
+    output(
+        &serde_json::json!({
+            "email":email,"auth_state":connection.auth_state(),
+            "apple_account_authenticated":pending.is_none(),"trusted_session_saved":pending.is_none(),
+            "verification_method":pending.map(|p| p.method),
+        }),
+        format,
+        title,
+    )
+}
+
+fn read_password(value: Option<String>, from_stdin: bool, account: &Account) -> Result<String> {
+    if value.is_some() || from_stdin {
+        read_auth_secret(
+            value,
+            from_stdin,
+            "Apple app-specific password",
+            "password-stdin",
+        )
+    } else {
+        secret(account)
+    }
 }
 
 fn print_startup_summary() {
@@ -2931,14 +3510,18 @@ fn print_startup_summary() {
     if auth_configured {
         println!("iCloud auth is configured. Run `icli auth` to manage accounts.");
     } else {
-        println!("No auth has been added yet. Most commands need an iCloud account.");
-        println!("Set it up once for future runs: `icli auth`.");
+        println!("No iCloud account is configured yet.");
+        println!(
+            "Use `icli auth add EMAIL` for Apple sign-in, or `icli auth app-password EMAIL` for Mail, Calendar, and Contacts."
+        );
     }
 
     println!("\nOther available commands:");
     println!("  icli calendar list");
     println!("  icli calendar <create|update|delete>");
     println!("  icli calendar events <list|search|get|create|update|delete|import>");
+    println!("  icli auth add EMAIL");
+    println!("  icli reminders <lists|list> --email EMAIL");
     println!("  icli config <default-user|format>");
     println!("  icli mail");
     println!("  icli contacts");
@@ -3032,38 +3615,93 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
         }
         Command::Auth { command } => match command {
-            AuthCommand::Add {
-                email,
-                password,
-                email_flag,
-                password_flag,
-                password_stdin,
-            } => {
-                let email = email
-                    .or(email_flag)
-                    .ok_or_else(|| anyhow!("provide an email address"))?;
-                let mut c = load_config()?;
-                if c.accounts
-                    .iter()
-                    .any(|a| a.email.eq_ignore_ascii_case(&email))
-                {
-                    bail!("Account already configured")
-                };
-                let pass = read_password(password.or(password_flag), password_stdin, None, true)?;
-                credential(&email)?
-                    .set_password(&pass)
-                    .context("Could not save to system credential store")?;
-                add_account_config(&mut c, &email);
-                save_config(&c)?;
-                response::next(format!("icli auth check --email {email}"));
-                if c.accounts.len() > 1 {
-                    response::next(format!("icli config default-user {email}"));
+            AuthCommand::Add(args) => {
+                let email = auth_email(args.email.or(args.email_flag))?;
+                let password = zeroize::Zeroizing::new(read_auth_secret(
+                    args.password.or(args.password_flag),
+                    args.password_stdin,
+                    "Apple Account password",
+                    "password-stdin",
+                )?);
+                if help_target() == "icli auth apple-login" {
+                    response::warning(
+                        "auth apple-login is deprecated; use auth add, then auth verify for the code.",
+                    );
                 }
+                let connection = apple_auth::AppleConnection::begin_login(&email, &password)?;
+                save_apple_session(&connection.session)?;
+                let mut config = load_config()?;
+                add_account_config(&mut config, &email);
+                save_config(&config)?;
+                output_auth_state(&connection, output_format, "Apple sign-in started")?;
+            }
+            AuthCommand::AppPassword(args) => {
+                let email = auth_email(args.email.or(args.email_flag))?;
+                let password = zeroize::Zeroizing::new(read_auth_secret(
+                    args.password.or(args.password_flag),
+                    args.password_stdin,
+                    "Apple app-specific password",
+                    "password-stdin",
+                )?);
+                credential(&email)?
+                    .set_password(&password)
+                    .context("Could not save app-specific password to system credential store")?;
+                let mut config = load_config()?;
+                add_account_config(&mut config, &email);
+                save_config(&config)?;
+                response::next(format!(
+                    "icli auth check --email {} --app-password",
+                    cli_quote(&email)
+                ));
                 output(
-                    &serde_json::json!({"email":email,"default_user":c.default_user,"credentials_saved":true,"verified":false}),
+                    &serde_json::json!({"email":email,"default_user":config.default_user,"app_specific_password_saved":true,"verified":false}),
                     output_format,
-                    "Saved account credentials",
+                    "Saved app-specific password",
                 )?;
+            }
+            AuthCommand::Verify {
+                email,
+                email_flag,
+                code,
+                code_flag,
+                code_stdin,
+            } => {
+                let email = selected_auth_email(email.or(email_flag))?;
+                let code = zeroize::Zeroizing::new(read_auth_secret(
+                    code.or(code_flag),
+                    code_stdin,
+                    "Apple verification code",
+                    "code-stdin",
+                )?);
+                let mut connection = load_apple_connection(&email)?;
+                let result = connection.verify_code(&code);
+                save_apple_session(&connection.session)?;
+                result?;
+                output_auth_state(&connection, output_format, "Apple sign-in verified")?;
+            }
+            AuthCommand::Resend {
+                email,
+                email_flag,
+                method,
+            } => {
+                let email = selected_auth_email(email.or(email_flag))?;
+                let mut connection = load_apple_connection(&email)?;
+                let result = connection.resend_code(method);
+                save_apple_session(&connection.session)?;
+                result?;
+                output_auth_state(
+                    &connection,
+                    output_format,
+                    "Apple verification code requested",
+                )?;
+            }
+            AuthCommand::Refresh { email, email_flag } => {
+                let email = selected_auth_email(email.or(email_flag))?;
+                let mut connection = load_apple_connection(&email)?;
+                let result = connection.refresh_session();
+                save_apple_session(&connection.session)?;
+                result?;
+                output_auth_state(&connection, output_format, "Apple session refreshed")?;
             }
             AuthCommand::List => {
                 let config = load_config()?;
@@ -3071,7 +3709,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                 output(&rows, output_format, "Configured accounts")?;
             }
             AuthCommand::Remove { email, email_flag } => {
-                let email = email.or(email_flag).expect("clap requires an email");
+                let email = selected_auth_email(email.or(email_flag))?;
                 let mut c = load_config()?;
                 remove_account_config(&mut c, &email)?;
                 match credential(&email)?.delete_credential() {
@@ -3081,6 +3719,7 @@ fn run_cli(cli: Cli) -> Result<()> {
                             .context("Could not delete password from the system credential store");
                     }
                 }
+                delete_apple_session(&email)?;
                 save_config(&c)?;
                 if c.default_user.is_none() {
                     for a in &c.accounts {
@@ -3099,9 +3738,17 @@ fn run_cli(cli: Cli) -> Result<()> {
                 email_flag,
                 password_flag,
                 password_stdin,
+                app_password,
             } => {
+                if !app_password {
+                    let email = selected_auth_email(email.or(email_flag))?;
+                    let connection = load_apple_connection(&email)?;
+                    connection.check_session()?;
+                    output_auth_state(&connection, output_format, "Apple session is valid")?;
+                    return Ok(());
+                }
                 let a = account(email.or(email_flag))?;
-                let p = read_password(password.or(password_flag), password_stdin, Some(&a), false)?;
+                let p = read_password(password.or(password_flag), password_stdin, &a)?;
                 let mut results = Vec::new();
                 let mail = mail_session(&a.email, &p).map(|mut session| mail_logout(&mut session));
                 let calendar = check_dav_auth(&a.email, &p);
@@ -3295,6 +3942,286 @@ fn run_cli(cli: Cli) -> Result<()> {
             }
             print_help_for_current_invocation();
         }
+        Command::Reminders {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let mut connection = load_apple_connection(&email)?;
+            connection.require_authenticated()?;
+            let result = match action {
+                RemindersCommand::Lists => connection
+                    .reminder_lists()
+                    .map(|rows| (serde_json::json!(rows), "Apple Reminders lists")),
+                RemindersCommand::List { skip, limit } => {
+                    connection.reminders(skip, limit).map(|(rows, has_more)| {
+                        if has_more {
+                            let next_skip = skip.saturating_add(rows.len());
+                            response::next(format!(
+                                "icli reminders list --email {} --skip {next_skip} --limit {limit}",
+                                cli_quote(&connection.session.account)
+                            ));
+                        }
+                        (serde_json::json!(rows), "Apple Reminders")
+                    })
+                }
+                RemindersCommand::Get { id } => connection
+                    .reminder_get(&id)
+                    .map(|row| (row, "Apple reminder")),
+                RemindersCommand::Create {
+                    list,
+                    title,
+                    notes,
+                    due,
+                    all_day,
+                    priority,
+                    flagged,
+                } => {
+                    let due_ms = due.as_deref().map(parse_reminder_due_ms).transpose()?;
+                    connection
+                        .reminder_create(&list, &title, &notes, due_ms, all_day, priority, flagged)
+                        .map(|row| (row, "Created Apple reminder"))
+                }
+                RemindersCommand::Update {
+                    id,
+                    title,
+                    notes,
+                    due,
+                    clear_due,
+                    priority,
+                    flagged,
+                    completed,
+                    all_day,
+                } => {
+                    let mut patch = serde_json::Map::new();
+                    if let Some(title) = title {
+                        patch.insert("title".into(), serde_json::json!(title));
+                    }
+                    if let Some(notes) = notes {
+                        patch.insert("notes".into(), serde_json::json!(notes));
+                    }
+                    if let Some(due) = due {
+                        patch.insert(
+                            "due_date_ms".into(),
+                            serde_json::json!(parse_reminder_due_ms(&due)?),
+                        );
+                    }
+                    if clear_due {
+                        patch.insert("due_date_ms".into(), serde_json::Value::Null);
+                    }
+                    if let Some(priority) = priority {
+                        patch.insert("priority".into(), serde_json::json!(priority));
+                    }
+                    if let Some(flagged) = flagged {
+                        patch.insert("flagged".into(), serde_json::json!(flagged));
+                    }
+                    if let Some(completed) = completed {
+                        patch.insert("completed".into(), serde_json::json!(completed));
+                    }
+                    if let Some(all_day) = all_day {
+                        patch.insert("all_day".into(), serde_json::json!(all_day));
+                    }
+                    connection
+                        .reminder_update(&id, &serde_json::Value::Object(patch))
+                        .map(|row| (row, "Updated Apple reminder"))
+                }
+                RemindersCommand::SetStatus { id, status } => connection
+                    .reminder_set_status(&id, matches!(status, ReminderStatus::Completed))
+                    .map(|row| (row, "Updated Apple reminder status")),
+                RemindersCommand::Delete { id, yes: _ } => connection
+                    .reminder_delete(&id)
+                    .map(|row| (row, "Deleted Apple reminder")),
+                RemindersCommand::Snapshot { list, limit } => connection
+                    .reminder_snapshot(&list, limit)
+                    .map(|row| (row, "Apple Reminders snapshot")),
+                RemindersCommand::Changes { since, limit } => connection
+                    .reminders_changes(since.as_deref(), limit)
+                    .map(|row| {
+                        if row
+                            .get("more_available")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                        {
+                            if let Some(cursor) =
+                                row.get("cursor").and_then(serde_json::Value::as_str)
+                            {
+                                response::next(format!(
+                                    "icli reminders changes --email {} --since {} --limit {limit}",
+                                    cli_quote(&connection.session.account),
+                                    cli_quote(cursor)
+                                ));
+                            }
+                        }
+                        (row, "Apple Reminders changes")
+                    }),
+                RemindersCommand::SyncCursor => connection.reminders_sync_cursor().map(|cursor| {
+                    (
+                        serde_json::json!({"cursor":cursor}),
+                        "Apple Reminders sync cursor",
+                    )
+                }),
+                RemindersCommand::Alarm { action } => match action {
+                    ReminderAlarmCommand::List { id } => connection
+                        .reminder_alarms(&id)
+                        .map(|rows| (serde_json::json!(rows), "Apple reminder alarms")),
+                    ReminderAlarmCommand::AddLocation {
+                        id,
+                        title,
+                        address,
+                        latitude,
+                        longitude,
+                        radius,
+                        proximity,
+                    } => connection
+                        .reminder_add_location_alarm(
+                            &id,
+                            &title,
+                            &address,
+                            latitude,
+                            longitude,
+                            radius,
+                            match proximity {
+                                ReminderProximity::Arriving => 1,
+                                ReminderProximity::Leaving => 2,
+                            },
+                        )
+                        .map(|row| (row, "Added Apple reminder location alarm")),
+                },
+                RemindersCommand::Hashtag { action } => match action {
+                    ReminderHashtagCommand::List { id } => connection
+                        .reminder_hashtags(&id)
+                        .map(|rows| (serde_json::json!(rows), "Apple reminder hashtags")),
+                    ReminderHashtagCommand::Create { id, name } => connection
+                        .reminder_hashtag_create(&id, &name)
+                        .map(|row| (row, "Created Apple reminder hashtag")),
+                    ReminderHashtagCommand::Update {
+                        id,
+                        hashtag_id,
+                        name,
+                    } => connection
+                        .reminder_hashtag_update(&id, &hashtag_id, &name)
+                        .map(|row| (row, "Updated Apple reminder hashtag")),
+                    ReminderHashtagCommand::Delete {
+                        id,
+                        hashtag_id,
+                        yes: _,
+                    } => connection
+                        .reminder_hashtag_delete(&id, &hashtag_id)
+                        .map(|row| (row, "Deleted Apple reminder hashtag")),
+                },
+                RemindersCommand::Attachment { action } => match action {
+                    ReminderAttachmentCommand::List { id } => connection
+                        .reminder_attachments(&id)
+                        .map(|rows| (serde_json::json!(rows), "Apple reminder attachments")),
+                    ReminderAttachmentCommand::CreateUrl { id, url, uti } => connection
+                        .reminder_attachment_create_url(&id, &url, &uti)
+                        .map(|row| (row, "Created Apple reminder URL attachment")),
+                    ReminderAttachmentCommand::Update {
+                        id,
+                        attachment_id,
+                        url,
+                        uti,
+                    } => connection
+                        .reminder_attachment_update(
+                            &id,
+                            &attachment_id,
+                            url.as_deref(),
+                            uti.as_deref(),
+                        )
+                        .map(|row| (row, "Updated Apple reminder attachment")),
+                    ReminderAttachmentCommand::Delete {
+                        id,
+                        attachment_id,
+                        yes: _,
+                    } => connection
+                        .reminder_attachment_delete(&id, &attachment_id)
+                        .map(|row| (row, "Deleted Apple reminder attachment")),
+                },
+                RemindersCommand::Recurrence { action } => match action {
+                    ReminderRecurrenceCommand::List { id } => connection
+                        .reminder_recurrences(&id)
+                        .map(|rows| (serde_json::json!(rows), "Apple reminder recurrence rules")),
+                    ReminderRecurrenceCommand::Create {
+                        id,
+                        frequency,
+                        interval,
+                        occurrence_count,
+                        first_day_of_week,
+                    } => connection
+                        .reminder_recurrence_create(
+                            &id,
+                            match frequency {
+                                ReminderFrequency::Daily => 0,
+                                ReminderFrequency::Weekly => 1,
+                                ReminderFrequency::Monthly => 2,
+                                ReminderFrequency::Yearly => 3,
+                            },
+                            interval,
+                            occurrence_count,
+                            first_day_of_week,
+                        )
+                        .map(|row| (row, "Created Apple reminder recurrence rule")),
+                    ReminderRecurrenceCommand::Update {
+                        id,
+                        rule_id,
+                        frequency,
+                        interval,
+                        occurrence_count,
+                        first_day_of_week,
+                    } => {
+                        let mut patch = serde_json::Map::new();
+                        if let Some(value) = frequency {
+                            patch.insert(
+                                "frequency".into(),
+                                serde_json::json!(match value {
+                                    ReminderFrequency::Daily => 0,
+                                    ReminderFrequency::Weekly => 1,
+                                    ReminderFrequency::Monthly => 2,
+                                    ReminderFrequency::Yearly => 3,
+                                }),
+                            );
+                        }
+                        if let Some(value) = interval {
+                            patch.insert("interval".into(), serde_json::json!(value));
+                        }
+                        if let Some(value) = occurrence_count {
+                            patch.insert("occurrence_count".into(), serde_json::json!(value));
+                        }
+                        if let Some(value) = first_day_of_week {
+                            patch.insert("first_day_of_week".into(), serde_json::json!(value));
+                        }
+                        connection
+                            .reminder_recurrence_update(
+                                &id,
+                                &rule_id,
+                                &serde_json::Value::Object(patch),
+                            )
+                            .map(|row| (row, "Updated Apple reminder recurrence rule"))
+                    }
+                    ReminderRecurrenceCommand::Delete {
+                        id,
+                        rule_id,
+                        yes: _,
+                    } => connection
+                        .reminder_recurrence_delete(&id, &rule_id)
+                        .map(|row| (row, "Deleted Apple reminder recurrence rule")),
+                },
+            };
+            let persist_result = connection
+                .save_cookies()
+                .and_then(|()| save_apple_session(&connection.session));
+            let (data, title) = result?;
+            persist_result?;
+            output(&data, output_format, title)?;
+        }
+        Command::Reminders { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Reminders subcommand. Run `icli reminders --help` for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
     }
     Ok(())
 }
@@ -3313,6 +4240,17 @@ fn date_bound(s: &str, end: bool) -> Result<DateTime<Utc>> {
         d
     };
     Ok(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()))
+}
+
+fn parse_reminder_due_ms(value: &str) -> Result<i64> {
+    if let Ok(date) = DateTime::parse_from_rfc3339(value) {
+        return Ok(date.timestamp_millis());
+    }
+    let date = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("Invalid reminder due date {value}; use YYYY-MM-DD or RFC3339"))?;
+    Ok(Utc
+        .from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .timestamp_millis())
 }
 
 fn check_dav_auth(email: &str, password: &str) -> Result<()> {
@@ -6831,6 +7769,44 @@ fn dav(
 mod tests {
     use super::*;
 
+    #[test]
+    fn apple_session_chunks_round_trip_unicode_within_windows_blob_limit() {
+        let value = "synthetic-token/?/\u{1f600}/".repeat(1000);
+        let chunks = split_secret_chunks(&value, APPLE_SESSION_CHUNK_BYTES);
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.concat(), value);
+        for chunk in chunks {
+            assert!(!chunk.is_empty());
+            assert!(chunk.len() <= APPLE_SESSION_CHUNK_BYTES);
+            assert!(chunk.encode_utf16().count() * 2 <= 2560);
+        }
+    }
+
+    #[test]
+    fn readding_account_preserves_default_and_does_not_duplicate_it() {
+        let mut config = Config::default();
+        add_account_config(&mut config, "first@example.invalid");
+        add_account_config(&mut config, "second@example.invalid");
+        add_account_config(&mut config, "SECOND@example.invalid");
+        assert_eq!(config.accounts.len(), 2);
+        assert_eq!(
+            config.default_user.as_deref(),
+            Some("first@example.invalid")
+        );
+    }
+
+    #[test]
+    fn typed_auth_recovery_takes_precedence_over_http_error_string_matching() {
+        let error = apple_auth::recovery(
+            "synthetic@example.invalid",
+            "auth_refresh_required",
+            "Apple rejected the session (HTTP 421)",
+            "refresh",
+        );
+        assert_eq!(error_code(&error), ("auth_refresh_required", Some(false)));
+        assert!(next_step(&error).starts_with("icli auth refresh"));
+    }
+
     fn mock_dav_server(replies: Vec<(u16, String)>) -> (String, thread::JoinHandle<Vec<String>>) {
         use std::net::TcpListener;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -6842,7 +7818,10 @@ mod tests {
                 let deadline = Instant::now() + Duration::from_secs(10);
                 let mut socket = loop {
                     match listener.accept() {
-                        Ok((socket, _)) => break socket,
+                        Ok((socket, _)) => {
+                            socket.set_nonblocking(false).unwrap();
+                            break socket;
+                        }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             assert!(Instant::now() < deadline, "Missing mock DAV request");
                             thread::sleep(Duration::from_millis(10));
@@ -7274,7 +8253,7 @@ mod tests {
     }
 
     #[test]
-    fn pagination_flags_keep_existing_limit_defaults_for_all_five_commands() {
+    fn pagination_flags_keep_expected_defaults_for_all_six_commands() {
         for (args, default_limit) in [
             (
                 vec!["icli", "calendar", "events", "search", "planning"],
@@ -7284,6 +8263,7 @@ mod tests {
             (vec!["icli", "contacts", "search", "alex"], 100),
             (vec!["icli", "mail", "list"], 10),
             (vec!["icli", "mail", "search", "invoice"], 50),
+            (vec!["icli", "reminders", "list"], 100),
         ] {
             for explicit in [false, true] {
                 let mut args = args.clone();
@@ -7516,7 +8496,7 @@ mod tests {
         let positional = Cli::try_parse_from(["icli", "auth", "add", "jane@icloud.com"]).unwrap();
         assert!(matches!(
             positional.command,
-            Command::Auth { command: AuthCommand::Add { email: Some(ref email), email_flag: None, .. } }
+            Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: Some(ref email), email_flag: None, .. }) }
                 if email == "jane@icloud.com"
         ));
 
@@ -7524,7 +8504,7 @@ mod tests {
             Cli::try_parse_from(["icli", "auth", "add", "--email", "jane@icloud.com"]).unwrap();
         assert!(matches!(
             flagged.command,
-            Command::Auth { command: AuthCommand::Add { email: None, email_flag: Some(ref email), .. } }
+            Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: None, email_flag: Some(ref email), .. }) }
                 if email == "jane@icloud.com"
         ));
 

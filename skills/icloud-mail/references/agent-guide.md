@@ -30,14 +30,30 @@ If updating fails, report it and continue when the installed version's help supp
 
 Run `icli auth list` to inspect configured accounts. Reuse the intended account. With several accounts, pass `--email EMAIL` rather than choosing silently.
 
-If credentials are missing, explain the single human handoff: create an [Apple app-specific password](https://support.apple.com/en-us/102654), then authenticate locally. Apple requires two-factor authentication.
+For Apple Account sign-in, start the password exchange and submit verification as separate commands:
 
 ```sh
 icli auth add you@icloud.com
-icli auth check you@icloud.com
+icli auth verify you@icloud.com
+icli auth check
 ```
 
-The first command uses a hidden terminal prompt. For noninteractive execution, use `icli auth add EMAIL --password-stdin` with a supported private secret source piped directly to stdin. Never ask for a password in chat, place it in command arguments, or include it in logs. When private input is unavailable, have the user run the hidden-prompt command locally. iCLI stores credentials in the operating system credential store. Inspect `auth check` per-service results; an unrelated service failure need not block the requested service.
+Both input commands use hidden prompts only with terminal stdin. Agents should use `auth add EMAIL --password-stdin` and `auth verify EMAIL --code-stdin` with a supported private secret source piped directly to stdin. Never ask for a password or code in chat, place secrets in command arguments, or log them. When private input is unavailable, have the user run the hidden-prompt command locally.
+
+`auth add` contacts Apple and returns immediately after requesting a code. A successful start can have `data.auth_state=verification_required`, with exit 0 and an exact verification command in `next_steps`. It does not wait for the code. `auth verify` completes that pending challenge and saves the trusted session. `auth resend [--email EMAIL] --method device|sms` requests another code; SMS requires an offered trusted phone. The Apple Account password is never saved. Pending challenge data, trusted tokens, and cookies are kept in the operating system credential store. Newer bridge-only challenges and hardware security keys remain unsupported.
+
+Subsequent service commands reuse the selected account's session. `auth check` checks it without persisting changes; `auth refresh` renews saved tokens. Authentication failures return `auth_verification_required`, `auth_refresh_required`, or `auth_sign_in_required`, with an exact recovery command. Run that command, then retry the original service operation. The CLI never saves or replays the original operation. If tokens are completely rejected, a new password exchange with `auth add` may be necessary. An accepted code followed by a failed trust/session exchange can be resumed with `auth refresh`.
+
+Calendar, Contacts, and Mail currently require an [Apple app-specific password](https://support.apple.com/en-us/102654), which remains recommended for these services:
+
+```sh
+icli auth app-password you@icloud.com
+icli auth check --app-password
+```
+
+Use `auth app-password EMAIL --password-stdin` with private input for agents. This saves or replaces the app-specific password locally and creates the account if needed, without requiring Apple Account sign-in or contacting Apple. Inspect the per-service checks from `auth check --app-password`; an unrelated service failure need not block the requested service. Apple sessions and app-specific passwords can coexist on the same account. The first account becomes the default for all services, and `--email EMAIL` overrides it.
+
+Migration: `auth add` now starts Apple Account sign-in; old app-password setup scripts must use `auth app-password`, and old service checks must add `--app-password`. `auth apple-login` is a deprecated alias for `auth add` that now returns before verification. `auth remove EMAIL` deletes local account configuration, both credential types, pending challenges, and session chunks; remote Apple data is unaffected.
 
 ## Find the operation
 
@@ -46,6 +62,7 @@ Start with `icli --help`, then the relevant command group and leaf help. Help is
 - Calendars and event list/search: `icli calendar --help`, `icli calendar events --help`.
 - Contacts and contact search/groups: `icli contacts --help`, `icli contacts groups --help`.
 - Mail search, folders, drafts, sending, attachments: `icli mail --help`.
+- Apple Reminders: `icli reminders --help`. This group requires the saved Apple Account session established by `auth add` and `auth verify`. Read lists, reminders, snapshots, incremental changes, and related records. Reminder writes include create, update, status, soft-delete, alarms, hashtags, URL attachments, and recurrence rules. Inspect stable IDs and target records before writing; remote deletes require `--yes`. Reminder reads return 100 items by default; follow `next_steps` and keep account scope unchanged when paging with `--skip` and `--limit`. The first read may ask Apple to request trusted-device approval for encrypted Reminders data; approve it and retry.
 - Machine parsing: add `--json`. Human/agent text is the initial default; saved format settings may change it.
 
 For text search, use `icli calendar events search QUERY`, `icli contacts search QUERY`, or `icli mail search QUERY`. Read each command's `--help` for field selection, date or folder scope, and matching rules before constructing a query.

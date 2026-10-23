@@ -40,21 +40,27 @@ older release without that command, rerun the installer.
 
 ## Connect your iCloud account
 
-Create an [Apple app-specific password](https://support.apple.com/en-us/102654), then save it with iCLI. In an interactive terminal, iCLI prompts without displaying the password:
+Start Apple Account sign-in, then submit the code in a separate command:
 
 ```sh
 icli auth add you@icloud.com
-icli auth check you@icloud.com
+icli auth verify you@icloud.com
+icli auth check
+icli reminders lists
 ```
 
-The password is stored in your operating system credential store. For account selection, noninteractive password input, and output format options, see [Account and output settings](./account-and-output).
+In a terminal, the password and code use hidden prompts. For agents, pipe private input into `auth add EMAIL --password-stdin` and `auth verify EMAIL --code-stdin`. Do not paste secrets into chat or command arguments. Follow the returned `auth_state` and `next_steps`; `auth add` exits after requesting verification. The OS credential store holds pending and trusted session data, so later commands reuse sign-in. The Apple Account password is never saved. `auth refresh` renews saved tokens; after authentication recovery, retry the original command.
 
-An agent should first inspect `icli auth list` and reuse an intended configured
-account. If none is available, the human creates the app-specific password and
-enters it through the local hidden prompt or a private secret input piped to
-`--password-stdin`. Do not paste credentials into chat or command arguments.
-Inspect the requested service's result from `auth check`; another service's
-failure need not block it.
+For Calendar, Contacts, and Mail, create a recommended [Apple app-specific password](https://support.apple.com/en-us/102654) and save it on the same account:
+
+```sh
+icli auth app-password you@icloud.com
+icli auth check --app-password
+```
+
+These backends currently require an app-specific password. `auth app-password` also supports setup without Apple Account sign-in and accepts `--password-stdin`. Inspect the requested service's result; an unrelated service failure need not block it. For account selection and formats, see [Account and output settings](./account-and-output).
+
+Migration: older scripts using `auth add` for app-specific passwords must use `auth app-password` and check with `auth check --app-password`. `auth apple-login` is a deprecated alias for starting sign-in; verification is now separate.
 
 Start with a read command:
 
