@@ -1,14 +1,10 @@
-# iCLI
-
-**Give your agent access to iCloud Calendar, Contacts, Mail, Apple Reminders, and Notes.**
-
-iCLI is an agent-first command-line tool written in Rust. It provides dedicated commands and structured output for iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes. Calendar, Contacts, and Mail use app-specific passwords. Reminders and Notes use a saved Apple Account session and Apple's private CloudKit service. Notes supports browsing, recent or full-zone title search, attachment metadata and downloads, text/Markdown/HTML export with local attachment copies, incremental changes, and guarded soft deletion of unshared notes.
-
-Use the CLI directly or connect an agent through the local MCP adapter. Each operation reports structured results and recovery instructions. Calendar batch operations support bounded concurrency.
-
-Use the same CLI yourself, or connect an agent through the local MCP adapter. 
-
-**Agents: start with [AGENT_GUIDE.md](AGENT_GUIDE.md).** It covers installation, updating, authentication, and how to use the CLI to complete any supported task.
+<div align="center">
+  <h1>☁️ iCLI</h1>
+  <p><strong>iCloud, ready for your agents.</strong></p>
+  <p>Connect agents to Apple's iCloud with a fast, safe CLI and clear guidance for services without an official Apple command-line tool.</p>
+  <p>📅 Calendar · 👥 Contacts · ✉️ Mail · ⏰ Reminders · 📝 Notes</p>
+  <p><strong>Agents:</strong> start with the <a href="AGENT_GUIDE.md">agent guide</a> for setup, authentication, and task workflows.</p>
+</div>
 
 [Quick start](#quick-start) | [Documentation](https://managing.software/docs/guide/usage/icloud-cli) | [Agent skills](skills/README.md) | [MCP setup](mcp/README.md)
 
