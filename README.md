@@ -10,7 +10,7 @@
 
 ## iCloud app coverage
 
-![iCLI workflow coverage across iCloud apps, with a percentage and support label for each app.](assets/app-coverage.svg)
+![iCLI workflow coverage across iCloud apps, with a percentage and support label for each app.](assets/app-coverage-3x5.svg)
 
 ## Quick start
 **We recommend you task your agent to do the work below for you.** 
