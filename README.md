@@ -18,7 +18,7 @@ Calendar, Contacts, and Mail cover every workflow listed for those apps in the c
 
 Calendar supports event search, recurrence, alarms, sharing, imports, and parallel queries. Contacts supports search, selected or complete property data, card updates, and groups. Mail supports folders, search, attachments, drafts, sending, flags, moves, and deletion. Reminders supports reads and writes for reminder records and their supported related records. Notes reads text and attachment metadata, downloads assets, and exports local text, Markdown, or HTML through Apple's private CloudKit service. These operate on iCloud data; data stored only on a device or another provider is outside iCLI's scope.
 
-![iCLI workflow coverage across iCloud apps, with a percentage and stage for each app.](assets/app-coverage.svg)
+![iCLI workflow coverage across iCloud apps, with a percentage and support label for each app.](assets/app-coverage.svg)
 
 Each percentage is iCLI's share of the workflows exposed by either CLI for that app. Each workflow counts once. A 100% score means iCLI covers every listed workflow, not every feature in Apple's app. "No CLI coverage" means neither tool exposes a command for that app. Notes coverage refers to the listed workflows, not full Notes feature parity. App icons come from [Apple's iCloud guide](https://support.apple.com/guide/icloud/mm203ae070a2).
 
