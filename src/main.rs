@@ -14,7 +14,7 @@ use response::output;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, OpenOptions},
     io::{BufRead, BufReader, IsTerminal, Read, Write},
     path::PathBuf,
     thread,
@@ -25,8 +25,8 @@ use std::{
 #[command(
     name = "icli",
     disable_version_flag = true,
-    about = "Read and manage iCloud Calendar, Contacts, Mail, Reminders, and Notes",
-    long_about = "Read and manage iCloud Calendar, Mail, Contacts, Apple Reminders, and Apple Notes. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
+    about = "Use iCloud services from the command line",
+    long_about = "Use iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes. Experimental private-service commands also cover iCloud Drive, Photos, Find My device actions, Apple Invites, account data, and Hide My Email operations. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
     before_help = concat!(
         "Running icli v",
         env!("CARGO_PKG_VERSION"),
@@ -34,7 +34,7 @@ use std::{
         env!("ICLI_RELEASE_DATE"),
         "."
     ),
-    override_usage = "icli <version|update|config|auth|calendar|agenda|calender|mail|contacts|reminders|notes|help> [OPTIONS]",
+    override_usage = "icli <version|update|config|auth|account|calendar|agenda|calender|contacts|drive|find-my|hide-my-email|invites|mail|photos|reminders|notes|help> [OPTIONS]",
     after_help = "Run `icli <command> --help` to read that command's instructions and accepted arguments. Put command-specific options after the command.\n\nOptions available: --json, --format <agent|csv|json>, --help, --version."
 )]
 struct Cli {
@@ -83,9 +83,55 @@ enum Command {
         command: ConfigCommand,
     },
     #[command(
+        about = "Read iCloud account devices, family, and storage details (experimental private API)"
+    )]
+    Account {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<AccountCommand>,
+    },
+    #[command(about = "Read and control linked devices through the experimental Find My API")]
+    FindMy {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<FindMyCommand>,
+    },
+    #[command(about = "Browse and download iCloud Drive files (experimental private API)")]
+    Drive {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<DriveCommand>,
+    },
+    #[command(
+        about = "Manage Hide My Email relay aliases (experimental private API; writes affect forwarding)"
+    )]
+    HideMyEmail {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<HideMyEmailCommand>,
+    },
+    #[command(about = "Browse and download iCloud Photos (experimental private API)")]
+    Photos {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<PhotosCommand>,
+    },
+    #[command(about = "Read and respond to Apple Invites events (experimental private API)")]
+    Invites {
+        #[arg(long, value_name = "EMAIL", global = true)]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<InvitesCommand>,
+    },
+    #[command(
         about = "Manage app-specific-password accounts and Apple private-service sign-in",
         long_about = "Start Apple Account sign-in with auth add, finish its code challenge with auth verify, inspect the saved session with auth check, and renew it with auth refresh. Commands return structured state and recovery instructions. Save a recommended app-specific password for Mail, Calendar, and Contacts with auth app-password. Passwords, pending challenges, and trusted sessions are kept in the OS credential store; the Apple Account password itself is never saved.",
-        after_help = "Commands: add, verify, resend, check, refresh, app-password, list, remove. auth apple-login is a deprecated alias for auth add. Run each command with --help for input options and side effects."
+        after_help = "Commands: add, verify, resend, check, refresh, logout, app-password, list, remove. auth apple-login is a deprecated alias for auth add. Run each command with --help for input options and side effects."
     )]
     Auth {
         #[command(subcommand)]
@@ -104,7 +150,7 @@ enum Command {
     },
     #[command(
         about = "Read and manage iCloud Mail messages",
-        long_about = "Use the Mail operations to list folders, read/search messages in any folder, download attachments, create drafts, send messages, change flags, move, or delete messages. Message identifiers are IMAP UIDs from list/search. Create saves a draft; send delivers mail through iCloud SMTP.",
+        long_about = "Use the Mail operations to list folders, read/search messages in any folder, download attachments, export raw RFC822 messages as .eml files, bulk-export a bounded folder page, create drafts, send messages, change flags, move, or delete messages. Message identifiers are IMAP UIDs from list/search. Exports never overwrite existing files. Create saves a draft; send delivers mail through iCloud SMTP.",
         after_help = "Run `icli mail <folders|list|search|get|download|create|send|update|move|delete> --help` for operation details. Running `icli mail` displays this operation list without contacting iCloud. Options available: --email, --folder, --skip, --limit, --json, --format <agent|csv|json>, --help."
     )]
     Mail {
@@ -114,7 +160,7 @@ enum Command {
     #[command(
         disable_help_subcommand = true,
         about = "Read and manage iCloud contacts",
-        long_about = "Use Contacts to search, list, and manage contacts, find your own card, and manage contact groups. Contact identifiers are vCard UIDs shown by list and search commands. Select an account with --email EMAIL or the configured default account.",
+        long_about = "Use Contacts to search, list, and manage contacts, import one or more vCards without overwriting existing contacts, export one contact or all contacts as vCards, find your own card, and manage contact groups. Contact identifiers are vCard UIDs shown by list and search commands. Select an account with --email EMAIL or the configured default account.",
         after_help = "Run `icli contacts help` to list vCard properties. Use `--include PROPERTY` or comma-separate properties to add them to list/get/search output; X- custom properties are supported. Run `icli contacts groups --help` for group operations. Running `icli contacts` displays this operation list without contacting iCloud."
     )]
     Contacts {
@@ -123,7 +169,7 @@ enum Command {
     },
     #[command(
         about = "Read and manage Apple Reminders",
-        long_about = "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when required; the saved trusted session is reused. The first read may request trusted-device approval for encrypted Reminders data. The command group supports reminder and list reads, reminder create/update/complete/delete, snapshots and incremental sync, alarms, hashtags, URL attachments, and recurrence rules. This is Apple Reminders, not Calendar tasks.",
+        long_about = "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when required; the saved trusted session is reused. The first read may request trusted-device approval for encrypted Reminders data. The command group supports reminder and list reads, reminder create/update/complete/delete, list create/rename/delete, snapshots and incremental sync, alarms, hashtags, URL attachments, and recurrence rules. This is Apple Reminders, not Calendar tasks.",
         after_help = "Use `icli reminders lists` and `icli reminders list` to inspect data before writing. IDs are stable CloudKit record names. Remote deletes require `--yes`. All writes target Apple CloudKit and are not rolled back if a later separate operation fails."
     )]
     Reminders {
@@ -139,9 +185,9 @@ enum Command {
     },
     #[command(
         about = "Read, search, export, and manage Apple Notes",
-        long_about = "Read Apple Notes through Apple's private CloudKit service using the saved Apple Account session. Browse folders and recent notes, search recent titles or search the full Notes zone with --all, read attachment metadata, download attachment files, export text/Markdown/HTML, and inspect incremental changes. HTML and Markdown exports download attachments to a sibling assets folder unless --no-assets is set. Explicit soft-delete commands require --yes and leave shared notes unchanged. Apple may require trusted-device approval for Notes data.",
-        override_usage = "icli notes <folders|recent|list|search|get|render|export|download|delete|delete-unshared|changes|sync-cursor> [OPTIONS]",
-        after_help = "Note IDs are stable CloudKit record names. Output uses structured agent text by default; use --json or --format csv|json for machine-readable data. Search uses the recents feed unless --all is specified. Attachment downloads write local files and never overwrite existing files. Delete commands soft-delete Notes records, require --yes, and verify each result; delete-unshared checks share metadata before every write."
+        long_about = "Read and manage Apple Notes through Apple's private CloudKit service using the saved Apple Account session. Browse folders and recent notes, search recent titles or search title and body content across the full Notes zone with `search QUERY --all --content`, create basic text notes, replace a plain-text title/body, read attachment metadata, download attachment files, export text/Markdown/HTML, and inspect incremental changes. Replacing note text rebuilds the body and does not preserve rich formatting; updates refuse rich-text, attachment-bearing, shared, or deleted notes. HTML and Markdown exports download attachments to a sibling assets folder unless --no-assets is set. Explicit soft-delete commands require --yes and leave shared notes unchanged. Apple may require trusted-device approval for Notes data.",
+        override_usage = "icli notes <folders|recent|list|search|create|update|get|render|export|download|delete|delete-unshared|changes|sync-cursor> [OPTIONS]",
+        after_help = "Note IDs are stable CloudKit record names. Output uses structured agent text by default; use --json or --format csv|json for machine-readable data. Search uses the recents feed unless --all is specified. Attachment downloads write local files and never overwrite existing files. Create/update are experimental plain-text operations; update refuses shared, deleted, or attachment-bearing notes, and replaces the whole text body. Delete commands soft-delete Notes records, require --yes, and verify each result; delete-unshared checks share metadata before every write."
     )]
     Notes {
         #[arg(
@@ -154,6 +200,256 @@ enum Command {
         #[command(subcommand)]
         action: Option<NotesCommand>,
     },
+}
+#[derive(Subcommand)]
+enum AccountCommand {
+    #[command(about = "Read account summary and storage usage")]
+    Summary,
+    #[command(about = "List devices linked to the Apple Account")]
+    Devices,
+    #[command(about = "List Apple Account family members")]
+    Family,
+    #[command(about = "Read iCloud storage usage")]
+    Storage,
+}
+#[derive(Subcommand)]
+enum FindMyCommand {
+    #[command(about = "List linked devices; --locate requests fresh locations")]
+    List {
+        #[arg(long)]
+        locate: bool,
+    },
+    #[command(about = "Read one device's Find My details")]
+    Get {
+        id: String,
+        #[arg(long)]
+        locate: bool,
+    },
+    #[command(about = "Play a sound on a Find My device")]
+    Sound {
+        id: String,
+        #[arg(long)]
+        subject: Option<String>,
+    },
+    #[command(about = "Display a message on a Find My device")]
+    Message {
+        id: String,
+        #[arg(long, required = true)]
+        text: String,
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long)]
+        sound: bool,
+    },
+    #[command(about = "Enable Lost Mode on a device; requires --yes")]
+    LostMode {
+        id: String,
+        #[arg(long)]
+        phone: Option<String>,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+    #[command(about = "Export one device's current Find My snapshot as JSON")]
+    Export {
+        id: String,
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+        #[arg(long)]
+        locate: bool,
+    },
+    #[command(about = "Request remote device erase; requires --yes and Apple erase capability")]
+    Erase {
+        id: String,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+}
+#[derive(Subcommand)]
+enum DriveCommand {
+    #[command(about = "List the contents of an iCloud Drive folder")]
+    List {
+        #[arg(value_name = "PATH", default_value = "/")]
+        path: String,
+    },
+    #[command(about = "Download one iCloud Drive file")]
+    Download {
+        id: String,
+        #[arg(long, required = true)]
+        zone: String,
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+    },
+}
+#[derive(Subcommand)]
+enum HideMyEmailCommand {
+    #[command(about = "List relay aliases")]
+    List,
+    #[command(about = "Generate a relay alias")]
+    Generate,
+    #[command(about = "Reserve a specific alias with a label")]
+    Reserve {
+        address: String,
+        #[arg(long, required = true)]
+        label: String,
+        #[arg(long, default_value = "Generated")]
+        note: String,
+    },
+    #[command(about = "Read an alias by its anonymous ID")]
+    Get { id: String },
+    #[command(about = "Update an alias label or note")]
+    Update {
+        id: String,
+        #[arg(long, required = true)]
+        label: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    #[command(about = "Pause forwarding for an alias")]
+    Deactivate { id: String },
+    #[command(about = "Resume forwarding for an alias")]
+    Reactivate { id: String },
+    #[command(about = "Permanently remove an alias; requires --yes")]
+    Delete {
+        id: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+}
+#[derive(Subcommand)]
+enum PhotosCommand {
+    #[command(about = "List the private photo library")]
+    Libraries,
+    #[command(about = "List custom and supported smart albums")]
+    Albums,
+    #[command(about = "List Shared Albums available to the signed-in account")]
+    SharedStreams,
+    #[command(about = "List a page of photos from All Photos or a selected album")]
+    List {
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        album: Option<String>,
+    },
+    #[command(about = "Read one photo's metadata")]
+    Get { id: String },
+    #[command(about = "Download an original, medium, or thumbnail photo file")]
+    Download {
+        id: String,
+        #[arg(long, value_enum, default_value = "original")]
+        size: PhotoDownloadVersion,
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+    },
+    #[command(about = "Download the private library or selected album to a local directory")]
+    Sync {
+        #[arg(long, value_name = "DIR", required = true)]
+        directory: PathBuf,
+        #[arg(long)]
+        album: Option<String>,
+    },
+    #[command(about = "Poll Photos and sync new assets at a fixed interval")]
+    Watch {
+        #[arg(long, value_name = "DIR", required = true)]
+        directory: PathBuf,
+        #[arg(long)]
+        album: Option<String>,
+        #[arg(long, default_value_t = 300)]
+        interval: u64,
+    },
+    #[command(about = "Read photo changes after an opaque sync cursor")]
+    Changes {
+        #[arg(long, required = true)]
+        since: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    #[command(about = "Read the current private Photos sync cursor")]
+    SyncCursor,
+    #[command(about = "List photos in a public iCloud Shared Album URL")]
+    SharedAlbum {
+        #[arg(value_name = "URL_OR_TOKEN")]
+        url: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    #[command(about = "Download photos from a public iCloud Shared Album URL")]
+    SharedAlbumDownload {
+        #[arg(value_name = "URL_OR_TOKEN")]
+        url: String,
+        #[arg(long, value_name = "DIR", required = true)]
+        directory: PathBuf,
+        #[arg(long, default_value_t = 1000)]
+        limit: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum PhotoDownloadVersion {
+    Original,
+    Medium,
+    Thumbnail,
+}
+
+impl PhotoDownloadVersion {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Original => "original",
+            Self::Medium => "medium",
+            Self::Thumbnail => "thumbnail",
+        }
+    }
+}
+#[derive(Subcommand)]
+enum InvitesCommand {
+    #[command(about = "List hosted and shared Apple Invites events")]
+    List,
+    #[command(about = "Read Apple Invites event details")]
+    Show { id: String },
+    #[command(about = "List responses to an Apple Invites event")]
+    Rsvps { id: String },
+    #[command(about = "Preview an Apple Invites share link without joining")]
+    Resolve { short_guid: String },
+    #[command(about = "Accept an Apple Invites share link and join the event")]
+    Accept { short_guid: String },
+    #[command(about = "Submit or update your RSVP to an Apple Invites event")]
+    Rsvp {
+        id: String,
+        #[arg(value_enum)]
+        status: InvitesRsvpStatus,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        message: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        additional_adults: u32,
+        #[arg(long, default_value_t = 0)]
+        additional_kids: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum InvitesRsvpStatus {
+    NoResponse,
+    NotGoing,
+    Maybe,
+    Going,
+}
+
+impl InvitesRsvpStatus {
+    fn wire_value(self) -> i64 {
+        match self {
+            Self::NoResponse => 0,
+            Self::NotGoing => 1,
+            Self::Maybe => 2,
+            Self::Going => 3,
+        }
+    }
 }
 #[derive(Subcommand)]
 enum ConfigCommand {
@@ -233,6 +529,28 @@ enum AuthCommand {
         #[arg(long = "email", conflicts_with = "email")]
         email_flag: Option<String>,
     },
+    #[command(
+        about = "Log out of the Apple web session and clear its local session; app passwords are kept"
+    )]
+    Logout {
+        #[arg(value_name = "EMAIL")]
+        email: Option<String>,
+        #[arg(long = "email", conflicts_with = "email")]
+        email_flag: Option<String>,
+        #[arg(
+            long,
+            help = "Ask Apple to keep this browser trusted for a later sign-in"
+        )]
+        keep_trusted: bool,
+        #[arg(long, help = "Ask Apple to log out all browser sessions")]
+        all_sessions: bool,
+        #[arg(
+            long,
+            required_if_eq("all_sessions", "true"),
+            help = "Confirm logging out all Apple browser sessions"
+        )]
+        yes: bool,
+    },
     #[command(about = "List configured accounts; never display secrets")]
     List,
     #[command(about = "Remove the account and its saved credentials and sessions locally")]
@@ -273,7 +591,10 @@ enum RemindersCommand {
         long_about = "Read Apple Reminders lists from the selected Apple Account. Output includes each list name and its stable service ID. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
         after_help = "Options: --email EMAIL, --json, --format <agent|csv|json>, --help."
     )]
-    Lists,
+    Lists {
+        #[command(subcommand)]
+        action: Option<ReminderListCommand>,
+    },
     #[command(
         about = "List reminders across all lists",
         long_about = "Read active and completed Apple Reminders across all lists. Output includes reminder ID, title, list, completion state, and due date where available. Results default to the first 100 reminders; use --skip and --limit to page through more. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
@@ -383,6 +704,24 @@ enum RemindersCommand {
 }
 
 #[derive(Subcommand)]
+enum ReminderListCommand {
+    #[command(about = "Create a reminder list")]
+    Create { name: String },
+    #[command(about = "Rename a reminder list")]
+    Update {
+        id: String,
+        #[arg(long, required = true)]
+        name: String,
+    },
+    #[command(about = "Delete an empty reminder list; requires --yes")]
+    Delete {
+        id: String,
+        #[arg(long, required = true)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum NotesCommand {
     #[command(about = "List Notes folders")]
     Folders,
@@ -418,6 +757,29 @@ enum NotesCommand {
         skip: usize,
         #[arg(long, help = "Search every note instead of only the recent feed")]
         all: bool,
+        #[arg(
+            long,
+            requires = "all",
+            help = "Search decrypted note text as well as titles (requires --all)"
+        )]
+        content: bool,
+    },
+    #[command(about = "Create a plain-text note")]
+    Create {
+        #[arg(long, required = true)]
+        title: String,
+        #[arg(long, default_value = "")]
+        body: String,
+        #[arg(long, value_name = "FOLDER_ID")]
+        folder: Option<String>,
+    },
+    #[command(about = "Replace a note's title or plain-text body")]
+    Update {
+        id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        body: Option<String>,
     },
     #[command(about = "Read one note by its stable ID")]
     Get {
@@ -766,6 +1128,17 @@ enum CalendarEventsCommand {
         after_help = "The query is a literal string, not a regular expression or a CalDAV expression. --field accepts summary, description, location, attendee, organizer, and categories. Search returns the regular event fields plus the selected search properties, and honors --include.\n\nOptions available: --calendar, --from, --to, --field, --skip, --limit, --concurrency, --email, --include, --json, --format <agent|csv|json>, --help."
     )]
     Search(CalendarEventsSearchArgs),
+    #[command(about = "Find available time ranges between dates")]
+    Availability {
+        #[arg(value_name = "FROM")]
+        from: String,
+        #[arg(value_name = "TO")]
+        to: String,
+        #[arg(long, value_name = "CALENDAR_OR_ID")]
+        calendar: Option<String>,
+        #[arg(long = "email", value_name = "EMAIL")]
+        email: Option<String>,
+    },
     #[command(
         about = "Retrieve one event by UID",
         long_about = "Retrieve an event using its iCalendar UID. The UID is shown by event list results. CALENDAR_OR_ID is required to identify the calendar containing the event. Event fields shown by default match the event list; use `--include PROPERTY` or comma-separate names to request top-level iCalendar properties. VALARM values are nested under `alarms`. Arbitrary provider and custom property names are accepted; absent names are reported as warnings.",
@@ -944,6 +1317,10 @@ enum MailCommand {
     Get(MailIdArgs),
     #[command(about = "Download a message attachment")]
     Download(MailDownloadArgs),
+    #[command(about = "Export one raw RFC 822 message as an .eml file")]
+    Export(MailExportArgs),
+    #[command(about = "Export a bounded page of messages as .eml files")]
+    ExportFolder(MailExportFolderArgs),
     #[command(about = "Create a draft in Drafts; this does not send it")]
     Create(MailCreateArgs),
     #[command(about = "Change read or flagged state for a message")]
@@ -1056,6 +1433,30 @@ struct MailDownloadArgs {
     #[arg(long, value_name = "EMAIL")]
     email: Option<String>,
 }
+#[derive(Args)]
+struct MailExportArgs {
+    #[arg(value_name = "UID")]
+    uid: u32,
+    #[arg(long, value_name = "FILE", required = true)]
+    output: PathBuf,
+    #[arg(long, default_value = "INBOX")]
+    folder: String,
+    #[arg(long, value_name = "EMAIL")]
+    email: Option<String>,
+}
+#[derive(Args)]
+struct MailExportFolderArgs {
+    #[arg(long, default_value = "INBOX")]
+    folder: String,
+    #[arg(long, value_name = "DIRECTORY", required = true)]
+    output_dir: PathBuf,
+    #[arg(long, default_value_t = 100)]
+    limit: usize,
+    #[arg(long, default_value_t = 0)]
+    skip: usize,
+    #[arg(long, value_name = "EMAIL")]
+    email: Option<String>,
+}
 #[derive(Subcommand)]
 enum ContactsCommand {
     #[command(about = "Find the contact matching the configured account address")]
@@ -1083,6 +1484,10 @@ enum ContactsCommand {
     Get(ContactIdArgs),
     #[command(about = "List vCard properties available in this account")]
     Help(ContactHelpArgs),
+    #[command(about = "Import one or more vCard files without overwriting existing contacts")]
+    Import(ContactImportArgs),
+    #[command(about = "Export one contact or all contacts as vCard files")]
+    Export(ContactExportArgs),
     #[command(about = "Create a contact")]
     Create(ContactCreateArgs),
     #[command(about = "Update a contact by UID")]
@@ -1223,6 +1628,26 @@ struct ContactDeleteArgs {
     email: Option<String>,
     #[arg(long, required = true)]
     yes: bool,
+}
+#[derive(Args)]
+struct ContactImportArgs {
+    #[arg(value_name = "FILE")]
+    file: PathBuf,
+    #[arg(long, value_name = "EMAIL")]
+    email: Option<String>,
+}
+#[derive(Args)]
+struct ContactExportArgs {
+    #[arg(value_name = "UID")]
+    uid: Option<String>,
+    #[arg(long, conflicts_with = "uid")]
+    all: bool,
+    #[arg(long, value_name = "FILE")]
+    output: Option<PathBuf>,
+    #[arg(long, value_name = "DIRECTORY")]
+    output_dir: Option<PathBuf>,
+    #[arg(long, value_name = "EMAIL")]
+    email: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -1685,6 +2110,144 @@ fn run_contacts(action: ContactsCommand, format: OutputFormat) -> Result<()> {
             let response = serde_json::json!({"default_fields": ["uid", "name", "emails", "phones", "birthday"], "standard_vcard_properties": standard, "properties_found_in_account": available, "custom_properties_found_in_account": custom, "property_parameter_names_found_in_account": parameters, "usage": "icli contacts list --include BDAY,ADR; requested fields are returned under properties, property names are case-insensitive, and custom X- properties are supported"});
             output(&response, format, "Available contact properties")
         }
+        ContactsCommand::Import(args) => {
+            let raw = fs::read_to_string(&args.file)
+                .with_context(|| format!("Could not read {}", args.file.display()))?;
+            let cards = split_vcard_documents(&raw)?;
+            if cards.is_empty() {
+                bail!("The input contains no vCards");
+            }
+            let a = account(args.email)?;
+            let p = secret(&a)?;
+            let mut seen = BTreeSet::new();
+            let mut imported = Vec::new();
+            let mut failures = Vec::new();
+            for (index, card) in cards.iter().enumerate() {
+                let parsed = parse_vcards(card);
+                let Some(contact) = parsed.first() else {
+                    failures
+                        .push(serde_json::json!({"index":index+1,"error":"could not parse vCard"}));
+                    continue;
+                };
+                if contact.uid.trim().is_empty() {
+                    failures.push(serde_json::json!({"index":index+1,"error":"vCard has no UID"}));
+                    continue;
+                }
+                if !seen.insert(contact.uid.clone()) {
+                    failures.push(serde_json::json!({"index":index+1,"uid":contact.uid,"error":"duplicate UID in import file"}));
+                    continue;
+                }
+                let result = (|| -> Result<()> {
+                    validate_vcard(card)?;
+                    let url = contact_resource_url(&a.email, &p, &contact.uid, true)?;
+                    carddav_write(
+                        &url,
+                        &a.email,
+                        &p,
+                        "PUT",
+                        card,
+                        Some(("If-None-Match", "*")),
+                    )
+                })();
+                match result {
+                    Ok(()) => imported.push(serde_json::json!({"uid":contact.uid,"name":contact.name})),
+                    Err(error) => failures.push(serde_json::json!({"index":index+1,"uid":contact.uid,"error":format!("{error:#}")})),
+                }
+            }
+            if !failures.is_empty() {
+                response::status(if imported.is_empty() { 1 } else { 3 });
+                response::warning(
+                    "vCard import is not atomic; inspect each item result before retrying",
+                );
+            }
+            response::selected(
+                &serde_json::json!({"file":args.file,"imported":imported,"failures":failures}),
+                "vCard import results",
+            )?;
+            Ok(())
+        }
+        ContactsCommand::Export(args) => {
+            let single = args.uid.is_some();
+            if single && (args.all || args.output.is_none() || args.output_dir.is_some()) {
+                bail!(
+                    "For one contact, provide UID and --output FILE; for all contacts, use --all --output-dir DIRECTORY"
+                );
+            }
+            if !single && (!args.all || args.output.is_some() || args.output_dir.is_none()) {
+                bail!(
+                    "For one contact, provide UID and --output FILE; for all contacts, use --all --output-dir DIRECTORY"
+                );
+            }
+            let a = account(args.email)?;
+            let p = secret(&a)?;
+            if let Some(uid) = args.uid {
+                let url = contact_resource_url(&a.email, &p, &uid, false)?;
+                let (card, _) = carddav_read(&url, &a.email, &p)?;
+                validate_vcard(&card)?;
+                let path = args.output.expect("validated output path");
+                write_new_file(&path, card.as_bytes())?;
+                response::selected(
+                    &serde_json::json!({"uid":uid,"path":path,"bytes":card.len()}),
+                    "Exported vCard",
+                )?;
+                return Ok(());
+            }
+            let output_dir = args.output_dir.expect("validated output directory");
+            fs::create_dir_all(&output_dir)
+                .with_context(|| format!("Could not create {}", output_dir.display()))?;
+            let vals = dav_items(
+                "https://contacts.icloud.com/",
+                &a.email,
+                &p,
+                "contact",
+                None,
+                None,
+            )?;
+            let contacts = vals
+                .into_iter()
+                .map(serde_json::from_value::<Contact>)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let mut exported = Vec::new();
+            let mut failures = Vec::new();
+            for contact in contacts.into_iter().filter(|c| !is_group_contact(c)) {
+                let safe = contact
+                    .uid
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || "-_.".contains(c) {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect::<String>();
+                let path = output_dir.join(format!("{safe}.vcf"));
+                let result = (|| -> Result<usize> {
+                    let url = contact_resource_url(&a.email, &p, &contact.uid, false)?;
+                    let (card, _) = carddav_read(&url, &a.email, &p)?;
+                    validate_vcard(&card)?;
+                    write_new_file(&path, card.as_bytes())?;
+                    Ok(card.len())
+                })();
+                match result {
+                    Ok(bytes) => exported
+                        .push(serde_json::json!({"uid":contact.uid,"path":path,"bytes":bytes})),
+                    Err(error) => failures
+                        .push(serde_json::json!({"uid":contact.uid,"error":format!("{error:#}")})),
+                }
+            }
+            if !failures.is_empty() {
+                response::status(if exported.is_empty() { 1 } else { 3 });
+                response::warning(
+                    "Some contacts could not be exported; inspect failures before retrying",
+                );
+            }
+            response::selected(
+                &serde_json::json!({"output_dir":output_dir,"exported":exported,"failures":failures}),
+                "vCard export results",
+            )?;
+            Ok(())
+        }
         ContactsCommand::Create(args) => {
             let fields = args.fields;
             let generated_uid = format!(
@@ -1890,6 +2453,73 @@ fn run_mail(action: MailCommand, format: OutputFormat) -> Result<()> {
                 "Downloaded attachment",
             )
         }
+        MailCommand::Export(args) => {
+            let a = account(args.email)?;
+            let p = secret(&a)?;
+            let mut s = mail_session(&a.email, &p)?;
+            s.select(&args.folder)
+                .with_context(|| format!("Could not select iCloud Mail folder {}", args.folder))?;
+            let fetched = s.uid_fetch(args.uid.to_string(), "(UID BODY.PEEK[])")?;
+            let raw = fetched
+                .iter()
+                .next()
+                .and_then(|f| f.body())
+                .ok_or_else(|| {
+                    anyhow!("No message found with UID {} in {}", args.uid, args.folder)
+                })?;
+            write_new_file(&args.output, raw)?;
+            mail_logout(&mut s);
+            output(
+                &serde_json::json!({"uid":args.uid,"folder":args.folder,"path":args.output,"bytes":raw.len()}),
+                format,
+                "Exported message",
+            )
+        }
+        MailCommand::ExportFolder(args) => {
+            if args.limit == 0 || args.limit > 1000 {
+                bail!("--limit must be from 1 to 1000; repeat with --skip to export another page");
+            }
+            fs::create_dir_all(&args.output_dir)
+                .with_context(|| format!("Could not create {}", args.output_dir.display()))?;
+            let a = account(args.email)?;
+            let p = secret(&a)?;
+            let mut s = mail_session(&a.email, &p)?;
+            s.select(&args.folder)
+                .with_context(|| format!("Could not select iCloud Mail folder {}", args.folder))?;
+            let ids: Vec<u32> = s.uid_search("ALL")?.into_iter().collect();
+            let total = ids.len();
+            let page = mail_page_ids(ids, args.skip, args.limit);
+            let page_len = page.len();
+            let mut exported = Vec::new();
+            let mut failures = Vec::new();
+            for uid in page {
+                let path = args.output_dir.join(format!("{uid}.eml"));
+                match s.uid_fetch(uid.to_string(), "(UID BODY.PEEK[])") {
+                    Ok(items) => match items.iter().next().and_then(|item| item.body()) {
+                        Some(raw) => match write_new_file(&path, raw) {
+                            Ok(()) => exported.push(serde_json::json!({"uid":uid,"path":path,"bytes":raw.len()})),
+                            Err(error) => failures.push(serde_json::json!({"uid":uid,"error":format!("{error:#}")})),
+                        },
+                        None => failures.push(serde_json::json!({"uid":uid,"error":"message disappeared before export"})),
+                    },
+                    Err(error) => failures.push(serde_json::json!({"uid":uid,"error":error.to_string()})),
+                }
+            }
+            mail_logout(&mut s);
+            let data = serde_json::json!({"folder":args.folder,"output_dir":args.output_dir,"skip":args.skip,"requested":args.limit,"exported":exported,"failures":failures,"more_available":args.skip.saturating_add(page_len)<total});
+            if !data["failures"].as_array().is_some_and(Vec::is_empty) {
+                response::status(if data["exported"].as_array().is_some_and(Vec::is_empty) {
+                    1
+                } else {
+                    3
+                });
+                response::warning(
+                    "Some messages were not exported; inspect failures before retrying",
+                );
+            }
+            response::selected(&data, "Exported mail messages")?;
+            Ok(())
+        }
         MailCommand::Create(args) => {
             validate_mail_header("recipient", &args.to)?;
             validate_mail_header("subject", &args.subject)?;
@@ -2004,6 +2634,21 @@ fn mail_session(
     client
         .login(email, password)
         .map_err(|e| anyhow!("iCloud Mail rejected authentication for {email}: {}", e.0))
+}
+
+fn write_new_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "Could not create {} without overwriting an existing file",
+                path.display()
+            )
+        })?;
+    file.write_all(contents)
+        .with_context(|| format!("Could not write {}", path.display()))
 }
 
 fn mail_logout(session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>) {
@@ -2458,6 +3103,39 @@ fn validate_vcard(data: &str) -> Result<()> {
         bail!("Invalid vCard: missing END:VCARD");
     }
     Ok(())
+}
+
+fn split_vcard_documents(data: &str) -> Result<Vec<String>> {
+    let mut cards = Vec::new();
+    let mut current = Vec::new();
+    let mut inside = false;
+    for line in data.lines() {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed.eq_ignore_ascii_case("BEGIN:VCARD") {
+            if inside {
+                bail!("The vCard input contains a nested BEGIN:VCARD");
+            }
+            inside = true;
+            current.clear();
+        }
+        if inside {
+            current.push(trimmed);
+        }
+        if trimmed.eq_ignore_ascii_case("END:VCARD") {
+            if !inside {
+                bail!("The vCard input contains END:VCARD without BEGIN:VCARD");
+            }
+            let card = format!("{}\r\n", current.join("\r\n"));
+            validate_vcard(&card)?;
+            cards.push(card);
+            current.clear();
+            inside = false;
+        }
+    }
+    if inside {
+        bail!("The vCard input ended before END:VCARD");
+    }
+    Ok(cards)
 }
 
 fn contact_patch(fields: &ContactFields) -> Result<Vec<String>> {
@@ -3773,6 +4451,372 @@ fn run_cli(cli: Cli) -> Result<()> {
                 }
             }
         }
+        Command::Account {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            connection.require_authenticated()?;
+            let (data, title) = match action {
+                AccountCommand::Summary => {
+                    (connection.account_summary()?, "iCloud account summary")
+                }
+                AccountCommand::Devices => (connection.account_devices()?, "Apple Account devices"),
+                AccountCommand::Family => {
+                    (connection.account_family()?, "Apple Account family members")
+                }
+                AccountCommand::Storage => (connection.account_storage()?, "iCloud storage usage"),
+            };
+            output(&data, output_format, title)?;
+        }
+        Command::Account { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide an account subcommand. Run icli account --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
+        Command::FindMy {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            let (result, title) = match action {
+                FindMyCommand::List { locate } => (
+                    connection.find_my_devices(locate)?,
+                    if locate {
+                        "Find My devices with fresh locations"
+                    } else {
+                        "Find My devices"
+                    },
+                ),
+                FindMyCommand::Get { id, locate } => {
+                    let devices = connection.find_my_devices(locate)?;
+                    let item = devices
+                        .as_array()
+                        .and_then(|rows| {
+                            rows.iter().find(|row| {
+                                row.get("id").and_then(serde_json::Value::as_str)
+                                    == Some(id.as_str())
+                            })
+                        })
+                        .cloned()
+                        .ok_or_else(|| anyhow!("No Find My device matched that ID"))?;
+                    (item, "Find My device")
+                }
+                FindMyCommand::Sound { id, subject } => (
+                    connection.find_my_action(
+                        &id,
+                        "sound",
+                        subject.as_deref(),
+                        None,
+                        None,
+                        false,
+                    )?,
+                    "Find My sound request",
+                ),
+                FindMyCommand::Message {
+                    id,
+                    text,
+                    subject,
+                    sound,
+                } => (
+                    connection.find_my_action(
+                        &id,
+                        "message",
+                        subject.as_deref(),
+                        Some(&text),
+                        None,
+                        sound,
+                    )?,
+                    "Find My message request",
+                ),
+                FindMyCommand::LostMode {
+                    id,
+                    phone,
+                    message,
+                    yes: _,
+                } => (
+                    connection.find_my_action(
+                        &id,
+                        "lost-mode",
+                        None,
+                        message.as_deref(),
+                        phone.as_deref(),
+                        false,
+                    )?,
+                    "Find My Lost Mode request",
+                ),
+                FindMyCommand::Export {
+                    id,
+                    output: path,
+                    locate,
+                } => {
+                    let devices = connection.find_my_devices(locate)?;
+                    let item = devices
+                        .as_array()
+                        .and_then(|rows| {
+                            rows.iter().find(|row| {
+                                row.get("id").and_then(serde_json::Value::as_str)
+                                    == Some(id.as_str())
+                            })
+                        })
+                        .cloned()
+                        .ok_or_else(|| anyhow!("No Find My device matched that ID"))?;
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .with_context(|| {
+                            format!(
+                                "Could not create snapshot file {} without overwriting",
+                                path.display()
+                            )
+                        })?;
+                    serde_json::to_writer_pretty(file, &item)
+                        .context("Could not write Find My snapshot")?;
+                    (
+                        serde_json::json!({"path":path,"device_id":id,"located_freshly":locate}),
+                        "Exported Find My snapshot",
+                    )
+                }
+                FindMyCommand::Erase {
+                    id,
+                    message,
+                    yes: _,
+                } => (
+                    connection.find_my_erase(&id, message.as_deref())?,
+                    "Find My erase request",
+                ),
+            };
+            output(&result, output_format, title)?;
+        }
+        Command::FindMy { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Find My subcommand. Run icli find-my --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
+        Command::Drive {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            let (data, title) = match action {
+                DriveCommand::List { path } => {
+                    (connection.drive_list(&path)?, "iCloud Drive folder")
+                }
+                DriveCommand::Download {
+                    id,
+                    zone,
+                    output: path,
+                } => (
+                    connection.drive_download(&id, &zone, &path)?,
+                    "Downloaded iCloud Drive file",
+                ),
+            };
+            output(&data, output_format, title)?;
+        }
+        Command::Drive { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Drive subcommand. Run icli drive --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
+        Command::HideMyEmail {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            let data = match action {
+                HideMyEmailCommand::List => {
+                    connection.hide_my_email_request("v2/hme/list", "GET", None)?
+                }
+                HideMyEmailCommand::Generate => {
+                    connection.hide_my_email_request("v1/hme/generate", "POST", None)?
+                }
+                HideMyEmailCommand::Reserve {
+                    address,
+                    label,
+                    note,
+                } => connection.hide_my_email_request(
+                    "v1/hme/reserve",
+                    "POST",
+                    Some(&serde_json::json!({"hme":address,"label":label,"note":note})),
+                )?,
+                HideMyEmailCommand::Get { id } => connection.hide_my_email_request(
+                    "v2/hme/get",
+                    "POST",
+                    Some(&serde_json::json!({"anonymousId":id})),
+                )?,
+                HideMyEmailCommand::Update { id, label, note } => {
+                    let mut payload = serde_json::json!({"anonymousId":id,"label":label});
+                    if let Some(note) = note {
+                        payload["note"] = serde_json::json!(note);
+                    }
+                    connection.hide_my_email_request(
+                        "v1/hme/updateMetaData",
+                        "POST",
+                        Some(&payload),
+                    )?
+                }
+                HideMyEmailCommand::Deactivate { id } => connection.hide_my_email_request(
+                    "v1/hme/deactivate",
+                    "POST",
+                    Some(&serde_json::json!({"anonymousId":id})),
+                )?,
+                HideMyEmailCommand::Reactivate { id } => connection.hide_my_email_request(
+                    "v1/hme/reactivate",
+                    "POST",
+                    Some(&serde_json::json!({"anonymousId":id})),
+                )?,
+                HideMyEmailCommand::Delete { id, yes: _ } => connection.hide_my_email_request(
+                    "v1/hme/delete",
+                    "POST",
+                    Some(&serde_json::json!({"anonymousId":id})),
+                )?,
+            };
+            output(&data, output_format, "Hide My Email")?;
+        }
+        Command::HideMyEmail { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Hide My Email subcommand. Run icli hide-my-email --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
+        Command::Photos {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            if let PhotosCommand::Watch {
+                directory,
+                album,
+                interval,
+            } = &action
+            {
+                return connection.photos_watch(directory, album.as_deref(), *interval);
+            }
+            let (data, title) = match action {
+                PhotosCommand::Libraries => {
+                    (connection.photos_libraries()?, "iCloud Photos libraries")
+                }
+                PhotosCommand::Albums => (connection.photos_albums()?, "iCloud Photos albums"),
+                PhotosCommand::SharedStreams => {
+                    (connection.photos_shared_streams()?, "iCloud Shared Albums")
+                }
+                PhotosCommand::List { skip, limit, album } => (
+                    connection.photos_list(skip, limit, album.as_deref())?,
+                    "iCloud Photos",
+                ),
+                PhotosCommand::Get { id } => (connection.photos_get(&id)?, "iCloud photo metadata"),
+                PhotosCommand::Download {
+                    id,
+                    size,
+                    output: path,
+                } => (
+                    connection.photos_download(&id, size.as_str(), &path)?,
+                    "Downloaded iCloud photo",
+                ),
+                PhotosCommand::Sync { directory, album } => (
+                    connection.photos_sync(&directory, album.as_deref())?,
+                    "Synchronized iCloud Photos",
+                ),
+                PhotosCommand::Watch { .. } => unreachable!("handled before single-run dispatch"),
+                PhotosCommand::Changes { since, limit } => (
+                    connection.photos_changes(&since, limit)?,
+                    "iCloud Photos changes",
+                ),
+                PhotosCommand::SyncCursor => (
+                    connection.photos_sync_cursor()?,
+                    "iCloud Photos sync cursor",
+                ),
+                PhotosCommand::SharedAlbum { url, limit } => (
+                    connection.photos_shared_album(&url, limit)?,
+                    "iCloud Shared Album photos",
+                ),
+                PhotosCommand::SharedAlbumDownload {
+                    url,
+                    directory,
+                    limit,
+                } => (
+                    connection.photos_shared_album_download(&url, &directory, limit)?,
+                    "Downloaded iCloud Shared Album photos",
+                ),
+            };
+            output(&data, output_format, title)?;
+        }
+        Command::Photos { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Photos subcommand. Run icli photos --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
+        Command::Invites {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let connection = load_apple_connection(&email)?;
+            let (data, title) = match action {
+                InvitesCommand::List => (connection.invites_list()?, "Apple Invites events"),
+                InvitesCommand::Show { id } => {
+                    (connection.invites_event(&id)?, "Apple Invites event")
+                }
+                InvitesCommand::Rsvps { id } => {
+                    (connection.invites_rsvps(&id)?, "Apple Invites RSVPs")
+                }
+                InvitesCommand::Resolve { short_guid } => (
+                    connection.invites_resolve(&short_guid)?,
+                    "Apple Invites link preview",
+                ),
+                InvitesCommand::Accept { short_guid } => (
+                    connection.invites_accept(&short_guid)?,
+                    "Joined Apple Invites event",
+                ),
+                InvitesCommand::Rsvp {
+                    id,
+                    status,
+                    name,
+                    message,
+                    additional_adults,
+                    additional_kids,
+                } => (
+                    connection.invites_rsvp(
+                        &id,
+                        status.wire_value(),
+                        name.as_deref(),
+                        message.as_deref(),
+                        additional_adults,
+                        additional_kids,
+                    )?,
+                    "Apple Invites RSVP",
+                ),
+            };
+            output(&data, output_format, title)?;
+        }
+        Command::Invites { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide an Invites subcommand. Run icli invites --help for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
         Command::Auth { command } => match command {
             AuthCommand::Add(args) => {
                 let email = auth_email(args.email.or(args.email_flag))?;
@@ -3861,6 +4905,24 @@ fn run_cli(cli: Cli) -> Result<()> {
                 save_apple_session(&connection.session)?;
                 result?;
                 output_auth_state(&connection, output_format, "Apple session refreshed")?;
+            }
+            AuthCommand::Logout {
+                email,
+                email_flag,
+                keep_trusted,
+                all_sessions,
+                yes: _,
+            } => {
+                let email = selected_auth_email(email.or(email_flag))?;
+                let connection = load_apple_connection(&email)?;
+                let mut result = connection.logout(keep_trusted, all_sessions);
+                delete_apple_session(&email)?;
+                result["local_session_cleared"] = serde_json::json!(true);
+                result["email"] = serde_json::json!(email);
+                if result["remote_logout_confirmed"].as_bool() != Some(true) {
+                    response::next(format!("icli auth add {}", cli_quote(&email)));
+                }
+                output(&result, output_format, "Apple session logged out")?;
             }
             AuthCommand::List => {
                 let config = load_config()?;
@@ -3993,6 +5055,14 @@ fn run_cli(cli: Cli) -> Result<()> {
                     concurrency,
                 )?,
                 Some(CalendarEventsCommand::Search(args)) => run_event_search(args, output_format)?,
+                Some(CalendarEventsCommand::Availability {
+                    from,
+                    to,
+                    calendar,
+                    email,
+                }) => {
+                    run_event_availability(&from, &to, calendar.as_deref(), email)?;
+                }
                 Some(CalendarEventsCommand::Get {
                     uid,
                     calendar,
@@ -4109,9 +5179,24 @@ fn run_cli(cli: Cli) -> Result<()> {
             let mut connection = load_apple_connection(&email)?;
             connection.require_authenticated()?;
             let result = match action {
-                RemindersCommand::Lists => connection
+                RemindersCommand::Lists { action: None } => connection
                     .reminder_lists()
                     .map(|rows| (serde_json::json!(rows), "Apple Reminders lists")),
+                RemindersCommand::Lists {
+                    action: Some(ReminderListCommand::Create { name }),
+                } => connection
+                    .reminder_list_create(&name)
+                    .map(|row| (row, "Created Apple Reminders list")),
+                RemindersCommand::Lists {
+                    action: Some(ReminderListCommand::Update { id, name }),
+                } => connection
+                    .reminder_list_update(&id, &name)
+                    .map(|row| (row, "Renamed Apple Reminders list")),
+                RemindersCommand::Lists {
+                    action: Some(ReminderListCommand::Delete { id, yes: _ }),
+                } => connection
+                    .reminder_list_delete(&id)
+                    .map(|row| (row, "Deleted Apple Reminders list")),
                 RemindersCommand::List { skip, limit } => {
                     connection.reminders(skip, limit).map(|(rows, has_more)| {
                         if has_more {
@@ -4380,12 +5465,12 @@ fn run_cli(cli: Cli) -> Result<()> {
             let email = selected_auth_email(email)?;
             let mut connection = load_apple_connection(&email)?;
             connection.require_authenticated()?;
-            let result =
-                match action {
-                    NotesCommand::Folders => connection
-                        .notes_folders()
-                        .map(|rows| (serde_json::json!(rows), "Apple Notes folders")),
-                    NotesCommand::Recent { skip, limit } => connection
+            let result = match action {
+                NotesCommand::Folders => connection
+                    .notes_folders()
+                    .map(|rows| (serde_json::json!(rows), "Apple Notes folders")),
+                NotesCommand::Recent { skip, limit } => {
+                    connection
                         .notes_recent(skip, limit)
                         .map(|(rows, has_more)| {
                             if has_more {
@@ -4396,47 +5481,65 @@ fn run_cli(cli: Cli) -> Result<()> {
                                 ));
                             }
                             (serde_json::json!(rows), "Recent Apple Notes")
-                        }),
-                    NotesCommand::List {
-                        skip,
-                        limit,
-                        all,
-                        folder_id,
-                        since,
-                    } => {
-                        let (rows, has_more, cursor) = if all {
-                            connection.notes_list_all(
-                                skip,
-                                limit,
-                                since.as_deref(),
-                                folder_id.as_deref(),
-                            )?
-                        } else if let Some(folder) = folder_id.as_deref() {
-                            connection.notes_recent_in_folder(folder, skip, limit)?
-                        } else {
-                            let (rows, more) = connection.notes_recent(skip, limit)?;
-                            (rows, more, None)
-                        };
+                        })
+                }
+                NotesCommand::List {
+                    skip,
+                    limit,
+                    all,
+                    folder_id,
+                    since,
+                } => {
+                    let (rows, has_more, cursor) = if all {
+                        connection.notes_list_all(
+                            skip,
+                            limit,
+                            since.as_deref(),
+                            folder_id.as_deref(),
+                        )?
+                    } else if let Some(folder) = folder_id.as_deref() {
+                        connection.notes_recent_in_folder(folder, skip, limit)?
+                    } else {
+                        let (rows, more) = connection.notes_recent(skip, limit)?;
+                        (rows, more, None)
+                    };
+                    if has_more {
+                        response::next(format!(
+                            "icli notes list --email {} {}--skip {} --limit {limit}",
+                            cli_quote(&connection.session.account),
+                            if all { "--all " } else { "" },
+                            skip.saturating_add(rows.len())
+                        ));
+                    }
+                    let mut data = serde_json::json!({"notes":rows,"more_available":has_more});
+                    if let Some(cursor) = cursor {
+                        data["cursor"] = serde_json::json!(cursor);
+                    }
+                    Ok((data, "Apple Notes"))
+                }
+                NotesCommand::Search {
+                    query,
+                    skip,
+                    limit,
+                    all,
+                    content,
+                } => {
+                    if content {
+                        let (rows, has_more, unavailable) =
+                            connection.notes_search_content(&query, skip, limit)?;
                         if has_more {
                             response::next(format!(
-                                "icli notes list --email {} {}--skip {} --limit {limit}",
+                                "icli notes search {} --all --content --email {} --skip {} --limit {limit}",
+                                cli_quote(&query),
                                 cli_quote(&connection.session.account),
-                                if all { "--all " } else { "" },
                                 skip.saturating_add(rows.len())
                             ));
                         }
-                        let mut data = serde_json::json!({"notes":rows,"more_available":has_more});
-                        if let Some(cursor) = cursor {
-                            data["cursor"] = serde_json::json!(cursor);
-                        }
-                        Ok((data, "Apple Notes"))
-                    }
-                    NotesCommand::Search {
-                        query,
-                        skip,
-                        limit,
-                        all,
-                    } => {
+                        Ok((
+                            serde_json::json!({"notes":rows,"more_available":has_more,"content_unavailable_count":unavailable}),
+                            "Apple Notes content search",
+                        ))
+                    } else {
                         let search = if all {
                             connection
                                 .notes_search_all(&query, skip, limit)
@@ -4457,161 +5560,172 @@ fn run_cli(cli: Cli) -> Result<()> {
                             (serde_json::json!(rows), "Apple Notes title search")
                         })
                     }
-                    NotesCommand::Get {
-                        id,
-                        with_attachments,
-                    } => connection
-                        .notes_get(&id, with_attachments)
-                        .map(|row| (row, "Apple note")),
-                    NotesCommand::Render { id } => connection.notes_get(&id, false).map(|row| {
+                }
+                NotesCommand::Create {
+                    title,
+                    body,
+                    folder,
+                } => connection
+                    .notes_create(&title, &body, folder.as_deref())
+                    .map(|row| (row, "Created Apple note")),
+                NotesCommand::Update { id, title, body } => connection
+                    .notes_update(&id, title.as_deref(), body.as_deref())
+                    .map(|row| (row, "Updated Apple note")),
+                NotesCommand::Get {
+                    id,
+                    with_attachments,
+                } => connection
+                    .notes_get(&id, with_attachments)
+                    .map(|row| (row, "Apple note")),
+                NotesCommand::Render { id } => connection.notes_get(&id, false).map(|row| {
+                    let title = row
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let text = row
+                        .get("text")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let html = render_note_text(title, text);
+                    (
+                        serde_json::json!({"id":row.get("id"),"html":html}),
+                        "Rendered Apple note",
+                    )
+                }),
+                NotesCommand::Export {
+                    id,
+                    output: path,
+                    export_format,
+                    no_assets,
+                } => {
+                    let result = (|| -> Result<(serde_json::Value, &'static str)> {
+                        let row = connection.notes_get(&id, false)?;
                         let title = row
                             .get("title")
                             .and_then(serde_json::Value::as_str)
-                            .unwrap_or("");
+                            .unwrap_or("Untitled");
                         let text = row
                             .get("text")
                             .and_then(serde_json::Value::as_str)
-                            .unwrap_or("");
-                        let html = render_note_text(title, text);
-                        (
-                            serde_json::json!({"id":row.get("id"),"html":html}),
-                            "Rendered Apple note",
-                        )
+                            .context("Apple did not return readable text for this note")?;
+                        let wants_assets = !no_assets
+                            && matches!(
+                                export_format,
+                                NotesExportFormat::Markdown | NotesExportFormat::Html
+                            );
+                        let stem = path
+                            .file_stem()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("note");
+                        let assets_dir = path
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or(std::path::Path::new("."))
+                            .join(format!("{stem}_assets"));
+                        let asset_result = if wants_assets {
+                            Some(connection.notes_download_attachments(&id, &assets_dir)?)
+                        } else {
+                            None
+                        };
+                        if asset_result.as_ref().is_some_and(|result| {
+                            result["failed"]
+                                .as_array()
+                                .is_some_and(|items| !items.is_empty())
+                        }) {
+                            response::status(3);
+                        }
+                        let attachments = asset_result
+                            .as_ref()
+                            .and_then(|result| result["downloaded"].as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let assets_folder = assets_dir
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("assets");
+                        let contents = match export_format {
+                            NotesExportFormat::Text => text.to_owned(),
+                            NotesExportFormat::Markdown => {
+                                render_note_markdown(title, text, &attachments, assets_folder)
+                            }
+                            NotesExportFormat::Html => {
+                                render_note_html_page(title, text, &attachments, assets_folder)
+                            }
+                        };
+                        fs::write(&path, &contents).with_context(|| {
+                            format!("Could not write note export to {}", path.display())
+                        })?;
+                        Ok((
+                            serde_json::json!({
+                                "id":row.get("id"),
+                                "path":path,
+                                "format":format!("{:?}",export_format).to_lowercase(),
+                                "bytes":contents.len(),
+                                "attachments":asset_result
+                            }),
+                            "Exported Apple note",
+                        ))
+                    })();
+                    result
+                }
+                NotesCommand::Download { id, output_dir } => connection
+                    .notes_download_attachments(&id, &output_dir)
+                    .map(|row| {
+                        if row["failed"]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                        {
+                            response::status(3);
+                        }
+                        (row, "Apple Notes attachments")
                     }),
-                    NotesCommand::Export {
-                        id,
-                        output: path,
-                        export_format,
-                        no_assets,
-                    } => {
-                        let result = (|| -> Result<(serde_json::Value, &'static str)> {
-                            let row = connection.notes_get(&id, false)?;
-                            let title = row
-                                .get("title")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("Untitled");
-                            let text = row
-                                .get("text")
-                                .and_then(serde_json::Value::as_str)
-                                .context("Apple did not return readable text for this note")?;
-                            let wants_assets = !no_assets
-                                && matches!(
-                                    export_format,
-                                    NotesExportFormat::Markdown | NotesExportFormat::Html
-                                );
-                            let stem = path
-                                .file_stem()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("note");
-                            let assets_dir = path
-                                .parent()
-                                .filter(|parent| !parent.as_os_str().is_empty())
-                                .unwrap_or(std::path::Path::new("."))
-                                .join(format!("{stem}_assets"));
-                            let asset_result = if wants_assets {
-                                Some(connection.notes_download_attachments(&id, &assets_dir)?)
-                            } else {
-                                None
-                            };
-                            if asset_result.as_ref().is_some_and(|result| {
-                                result["failed"]
-                                    .as_array()
-                                    .is_some_and(|items| !items.is_empty())
-                            }) {
-                                response::status(3);
-                            }
-                            let attachments = asset_result
-                                .as_ref()
-                                .and_then(|result| result["downloaded"].as_array())
-                                .cloned()
-                                .unwrap_or_default();
-                            let assets_folder = assets_dir
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("assets");
-                            let contents = match export_format {
-                                NotesExportFormat::Text => text.to_owned(),
-                                NotesExportFormat::Markdown => {
-                                    render_note_markdown(title, text, &attachments, assets_folder)
-                                }
-                                NotesExportFormat::Html => {
-                                    render_note_html_page(title, text, &attachments, assets_folder)
-                                }
-                            };
-                            fs::write(&path, &contents).with_context(|| {
-                                format!("Could not write note export to {}", path.display())
-                            })?;
-                            Ok((
-                                serde_json::json!({
-                                    "id":row.get("id"),
-                                    "path":path,
-                                    "format":format!("{:?}",export_format).to_lowercase(),
-                                    "bytes":contents.len(),
-                                    "attachments":asset_result
-                                }),
-                                "Exported Apple note",
-                            ))
-                        })();
-                        result
-                    }
-                    NotesCommand::Download { id, output_dir } => connection
-                        .notes_download_attachments(&id, &output_dir)
-                        .map(|row| {
-                            if row["failed"]
-                                .as_array()
-                                .is_some_and(|items| !items.is_empty())
+                NotesCommand::Changes { since } => {
+                    connection.notes_changes(since.as_deref()).map(|row| {
+                        if row
+                            .get("more_available")
+                            .and_then(serde_json::Value::as_bool)
+                            == Some(true)
+                        {
+                            if let Some(cursor) =
+                                row.get("cursor").and_then(serde_json::Value::as_str)
                             {
-                                response::status(3);
+                                response::next(format!(
+                                    "icli notes changes --email {} --since {}",
+                                    cli_quote(&connection.session.account),
+                                    cli_quote(cursor)
+                                ));
                             }
-                            (row, "Apple Notes attachments")
-                        }),
-                    NotesCommand::Changes { since } => {
-                        connection.notes_changes(since.as_deref()).map(|row| {
-                            if row
-                                .get("more_available")
-                                .and_then(serde_json::Value::as_bool)
-                                == Some(true)
-                            {
-                                if let Some(cursor) =
-                                    row.get("cursor").and_then(serde_json::Value::as_str)
-                                {
-                                    response::next(format!(
-                                        "icli notes changes --email {} --since {}",
-                                        cli_quote(&connection.session.account),
-                                        cli_quote(cursor)
-                                    ));
-                                }
-                            }
-                            (row, "Apple Notes changes")
-                        })
-                    }
-                    NotesCommand::Delete { id, .. } => connection
-                        .notes_delete(&id)
-                        .map(|row| (row, "Soft-deleted Apple note")),
-                    NotesCommand::DeleteUnshared { .. } => {
-                        connection.notes_delete_unshared().map(|row| {
-                            if row["failed"]
-                                .as_array()
-                                .is_some_and(|items| !items.is_empty())
-                            {
-                                response::status(3);
-                            }
-                            if row["skipped_shared"]
-                                .as_array()
-                                .is_some_and(|items| !items.is_empty())
-                            {
-                                response::warning("Shared Notes were skipped and left unchanged");
-                            }
-                            (row, "Unshared Apple Notes delete results")
-                        })
-                    }
-                    NotesCommand::SyncCursor => connection.notes_sync_cursor().map(|cursor| {
-                        (
-                            serde_json::json!({"cursor":cursor}),
-                            "Apple Notes sync cursor",
-                        )
-                    }),
-                };
+                        }
+                        (row, "Apple Notes changes")
+                    })
+                }
+                NotesCommand::Delete { id, .. } => connection
+                    .notes_delete(&id)
+                    .map(|row| (row, "Soft-deleted Apple note")),
+                NotesCommand::DeleteUnshared { .. } => {
+                    connection.notes_delete_unshared().map(|row| {
+                        if row["failed"]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                        {
+                            response::status(3);
+                        }
+                        if row["skipped_shared"]
+                            .as_array()
+                            .is_some_and(|items| !items.is_empty())
+                        {
+                            response::warning("Shared Notes were skipped and left unchanged");
+                        }
+                        (row, "Unshared Apple Notes delete results")
+                    })
+                }
+                NotesCommand::SyncCursor => connection.notes_sync_cursor().map(|cursor| {
+                    (
+                        serde_json::json!({"cursor":cursor}),
+                        "Apple Notes sync cursor",
+                    )
+                }),
+            };
             let persist_result = connection
                 .save_cookies()
                 .and_then(|()| save_apple_session(&connection.session));
@@ -7194,6 +8308,92 @@ fn run_event_list(
         include,
         Some("Check the UTC date range or omit --calendar to search all calendars."),
     )
+}
+
+fn event_time_bound(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.with_timezone(&Utc))
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .map(|date| {
+                    Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).expect("midnight is valid"))
+                })
+        })
+}
+
+fn run_event_availability(
+    from: &str,
+    to: &str,
+    calendar: Option<&str>,
+    email: Option<String>,
+) -> Result<()> {
+    let start = date_bound(from, false)?;
+    let end = date_bound(to, true)?;
+    if start >= end {
+        bail!("The end date must be after the start date");
+    }
+    let account = account(email)?;
+    let password = secret(&account)?;
+    let events = dav_items_with_concurrency(
+        "https://caldav.icloud.com/",
+        &account.email,
+        &password,
+        "event",
+        Some((start, end)),
+        calendar,
+        2,
+    )?;
+    let mut intervals = events
+        .iter()
+        .filter_map(|event| {
+            if event
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|v| v.eq_ignore_ascii_case("CANCELLED"))
+                || event
+                    .get("transparency")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|v| v.eq_ignore_ascii_case("TRANSPARENT"))
+            {
+                return None;
+            }
+            let from = event.get("start")?.as_str().and_then(event_time_bound)?;
+            let to = event.get("end")?.as_str().and_then(event_time_bound)?;
+            let from = from.max(start);
+            let to = to.min(end);
+            (from < to).then_some((from, to))
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_by_key(|range| range.0);
+    let mut busy: Vec<(DateTime<Utc>, DateTime<Utc>)> = Vec::new();
+    for (from, to) in intervals {
+        if let Some(last) = busy.last_mut().filter(|last| from <= last.1) {
+            last.1 = last.1.max(to);
+        } else {
+            busy.push((from, to));
+        }
+    }
+    let mut available = Vec::new();
+    let mut cursor = start;
+    for (from, to) in &busy {
+        if cursor < *from {
+            available.push((cursor, *from));
+        }
+        cursor = cursor.max(*to);
+    }
+    if cursor < end {
+        available.push((cursor, end));
+    }
+    let as_row = |(from, to): (DateTime<Utc>, DateTime<Utc>)| serde_json::json!({"start":from.to_rfc3339(),"end":to.to_rfc3339()});
+    let data = serde_json::json!({
+        "from":start.to_rfc3339(),"to":end.to_rfc3339(),"calendar":calendar,
+        "busy":busy.into_iter().map(as_row).collect::<Vec<_>>(),
+        "available":available.into_iter().map(as_row).collect::<Vec<_>>(),
+        "note":"Availability is inferred from non-cancelled, non-transparent events visible in the selected iCloud calendars."
+    });
+    response::selected(&data, "Calendar availability")
 }
 
 fn run_event_search(args: CalendarEventsSearchArgs, output_format: OutputFormat) -> Result<()> {

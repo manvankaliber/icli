@@ -8,8 +8,8 @@ guide, so installing one skill is sufficient.
 - `icloud-calendar`: read and manage events, calendars, sharing, and imports.
 - `icloud-mail`: search messages, download attachments, draft/send, and manage mail.
 - `icloud-reminders`: read and manage Apple Reminders, related records, and incremental changes.
-- `icloud-notes`: browse and read Apple Notes, export note text, and read incremental changes.
-- `icloud`: explicit iCLI setup/usage and workflows spanning supported services.
+- `icloud-notes`: browse, search, create simple text notes, update supported plain-text notes, export, and read incremental changes.
+- `icloud`: explicit iCLI setup/usage and workflows spanning supported services, including experimental Drive, Photos, Find My, Hide My Email, Apple Invites, and account commands.
 
 Install the skill relevant to your task from this repository:
 

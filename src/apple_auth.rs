@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use srp::{Client, ClientVerifier, EphemeralSecret, Generate, groups::G2048, utils::compute_m2};
 use srp_sha2::{Digest as SrpDigest, Sha256 as SrpSha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Cursor, Read, Write},
     path::Path,
@@ -278,6 +279,1722 @@ impl AppleConnection {
             Some(_) => "verification_required",
             None => "authenticated",
         }
+    }
+
+    /// Ask Apple to log out the current web session, then let the CLI clear
+    /// its local session persistence independently. Stored app passwords are
+    /// intentionally unaffected.
+    pub fn logout(&self, keep_trusted: bool, all_sessions: bool) -> Value {
+        let payload = json!({"trustBrowser":keep_trusted,"allBrowsers":all_sessions});
+        if self.auth_state() != "authenticated" {
+            return json!({
+                "remote_logout_confirmed":false,
+                "remote_logout_reason":"no established Apple session was available",
+                "local_session_cleared":false,
+                "keep_trusted":keep_trusted,
+                "all_sessions":all_sessions
+            });
+        }
+        let result = (|| -> Result<(u16, bool)> {
+            let mut url = Url::parse(&self.setup_root())?.join("logout")?;
+            url.query_pairs_mut()
+                .extend_pairs(service_params(&self.session));
+            let response = self
+                .client
+                .post(url)
+                .headers(icloud_headers())
+                .header(reqwest::header::CONTENT_TYPE, "text/plain;charset=UTF-8")
+                .body(payload.to_string())
+                .send()
+                .context("Could not contact Apple's session logout endpoint")?;
+            let status = response.status();
+            let confirmed = response
+                .json::<Value>()
+                .ok()
+                .and_then(|data| data.get("success").and_then(Value::as_bool))
+                .unwrap_or(false);
+            Ok((status.as_u16(), confirmed))
+        })();
+        match result {
+            Ok((status, confirmed)) => json!({
+                "remote_logout_confirmed":confirmed,
+                "remote_http_status":status,
+                "local_session_cleared":false,
+                "keep_trusted":keep_trusted,
+                "all_sessions":all_sessions
+            }),
+            Err(_) => json!({
+                "remote_logout_confirmed":false,
+                "remote_logout_reason":"Apple did not confirm remote logout",
+                "local_session_cleared":false,
+                "keep_trusted":keep_trusted,
+                "all_sessions":all_sessions
+            }),
+        }
+    }
+
+    fn account_service_request(&self, path: &str, post: bool) -> Result<Value> {
+        self.require_authenticated()?;
+        let setup = setup_endpoint(&self.session.account_data);
+        let url = if path.starts_with("setup/web/") {
+            format!("{}/{}", setup.trim_end_matches("/setup/ws/1"), path)
+        } else {
+            format!(
+                "{}/{}",
+                setup.trim_end_matches('/'),
+                path.trim_start_matches('/')
+            )
+        };
+        let mut request = if post {
+            self.client.post(url)
+        } else {
+            self.client.get(url)
+        }
+        .headers(icloud_headers())
+        .query(&service_params(&self.session));
+        if post {
+            request = request.json(&json!({}));
+        }
+        let response = request
+            .send()
+            .context("Could not contact Apple's iCloud account service")?;
+        let status = response.status();
+        let body = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!(
+                    "Apple rejected the saved session during account data access (HTTP {status})"
+                ),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple account service request failed (HTTP {status})");
+        }
+        Ok(body)
+    }
+
+    pub fn account_devices(&self) -> Result<Value> {
+        self.account_service_request("setup/web/device/getDevices", false)
+    }
+
+    pub fn account_family(&self) -> Result<Value> {
+        self.account_service_request("setup/web/family/getFamilyDetails", false)
+    }
+
+    pub fn account_storage(&self) -> Result<Value> {
+        self.account_service_request("storageUsageInfo", true)
+    }
+
+    pub fn account_summary(&self) -> Result<Value> {
+        let devices = self.account_devices()?;
+        let family = self.account_family()?;
+        let storage = self.account_storage()?;
+        Ok(
+            json!({"devices":devices.get("devices").and_then(Value::as_array).map(Vec::len),"family_members":family.get("familyMembers").and_then(Value::as_array).map(Vec::len),"storage":storage}),
+        )
+    }
+
+    pub fn find_my_devices(&self, locate: bool) -> Result<Value> {
+        self.require_authenticated()?;
+        let service = self
+            .session
+            .account_data
+            .pointer("/webservices/findme/url")
+            .and_then(Value::as_str)
+            .context("Apple did not advertise the Find My service")?;
+        let mut url = Url::parse(&format!("{}/", service.trim_end_matches('/')))
+            .context("Apple advertised an invalid Find My service URL")?;
+        if url.scheme() != "https" {
+            bail!("Apple advertised a non-HTTPS Find My service URL");
+        }
+        url = url.join(if locate {
+            "fmipservice/client/web/refreshClient"
+        } else {
+            "fmipservice/client/web/initClient"
+        })?;
+        url.query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let mut client_context = json!({"appName":"iCloud Find (Web)","appVersion":"2.0","apiVersion":"3.0","deviceListVersion":1,"fmly":false,"timezone":"UTC","inactiveTime":0});
+        if locate {
+            client_context["shouldLocate"] = json!(true);
+            client_context["selectedDevice"] = json!("all");
+        }
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .json(&json!({
+                "clientContext":client_context
+            }))
+            .send()
+            .context("Could not contact Apple's Find My service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the saved session during Find My access (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Find My request failed (HTTP {status})");
+        }
+        Ok(data.get("content").cloned().unwrap_or_else(|| json!([])))
+    }
+
+    pub fn find_my_action(
+        &self,
+        device_id: &str,
+        action: &str,
+        subject: Option<&str>,
+        message: Option<&str>,
+        phone_number: Option<&str>,
+        play_sound: bool,
+    ) -> Result<Value> {
+        self.require_authenticated()?;
+        if device_id.is_empty() || device_id.chars().any(char::is_control) {
+            bail!("Provide a valid Find My device ID");
+        }
+        let devices = self.find_my_devices(false)?;
+        if !devices.as_array().is_some_and(|rows| {
+            rows.iter()
+                .any(|row| row.get("id").and_then(Value::as_str) == Some(device_id))
+        }) {
+            bail!("No Find My device matched that ID; no device action was sent");
+        }
+        let service = self
+            .session
+            .account_data
+            .pointer("/webservices/findme/url")
+            .and_then(Value::as_str)
+            .context("Apple did not advertise the Find My service")?;
+        let root = Url::parse(&format!("{}/", service.trim_end_matches('/')))
+            .context("Apple advertised an invalid Find My service URL")?;
+        if root.scheme() != "https" {
+            bail!("Apple advertised a non-HTTPS Find My service URL");
+        }
+        let (path, payload) = match action {
+            "sound" => (
+                "playSound",
+                json!({"device":device_id,"subject":subject.unwrap_or("Find My Alert"),"clientContext":{"fmly":false}}),
+            ),
+            "message" => (
+                "sendMessage",
+                json!({"device":device_id,"subject":subject.unwrap_or("Find My Alert"),"sound":play_sound,"userText":true,"text":message.context("A message is required for this Find My action")?}),
+            ),
+            "lost-mode" => (
+                "lostDevice",
+                json!({"device":device_id,"ownerNbr":phone_number.unwrap_or_default(),"text":message.unwrap_or("This device has been lost. Please contact me."),"userText":true,"lostModeEnabled":true,"trackingEnabled":true,"passcode":""}),
+            ),
+            _ => bail!("Unsupported Find My device action"),
+        };
+        let mut url = root.join(&format!("fmipservice/client/web/{path}"))?;
+        url.query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .json(&payload)
+            .send()
+            .context("Could not contact Apple's Find My service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the saved session during Find My action (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Find My action failed (HTTP {status})");
+        }
+        if data.get("error").is_some_and(|error| !error.is_null()) {
+            bail!("Apple Find My action returned an error: {}", data["error"]);
+        }
+        Ok(json!({"device_id":device_id,"action":action,"response":data}))
+    }
+
+    /// Request an irreversible remote erase. Apple requires a short-lived
+    /// erase authorization token in addition to the saved web session.
+    pub fn find_my_erase(&self, device_id: &str, message: Option<&str>) -> Result<Value> {
+        self.require_authenticated()?;
+        if device_id.is_empty() || device_id.chars().any(char::is_control) {
+            bail!("Provide a valid Find My device ID");
+        }
+        let devices = self.find_my_devices(false)?;
+        let device = devices
+            .as_array()
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|row| row.get("id").and_then(Value::as_str) == Some(device_id))
+            })
+            .context("No Find My device matched that ID; no erase was requested")?;
+        if device.get("canWipeAfterLock").and_then(Value::as_bool) != Some(true) {
+            bail!("Apple does not report this device as remotely erasable; no erase was requested");
+        }
+
+        let session_token = self
+            .session
+            .session_headers
+            .get("x-apple-session-token")
+            .context("Saved session has no Apple session token; refresh authentication first")?;
+        let setup = self.setup_root();
+        let mut token_url = Url::parse(&setup)?.join("fmipWebAuthenticate")?;
+        token_url
+            .query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let token_response = self
+            .client
+            .post(token_url)
+            .headers(icloud_headers())
+            .json(&json!({"dsWebAuthToken":session_token}))
+            .send()
+            .context("Could not request Apple's Find My erase authorization")?;
+        let token_status = token_response.status();
+        let token_data = token_response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(token_status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!(
+                    "Apple rejected authentication for the Find My erase token (HTTP {token_status})"
+                ),
+                "refresh",
+            ));
+        }
+        if !token_status.is_success() {
+            bail!("Apple Find My erase authorization failed (HTTP {token_status})");
+        }
+        let erase_token = token_data
+            .pointer("/tokens/mmeFMIPWebEraseDeviceToken")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .context("Apple did not return a Find My erase authorization token")?;
+
+        let service = self
+            .session
+            .account_data
+            .pointer("/webservices/findme/url")
+            .and_then(Value::as_str)
+            .context("Apple did not advertise the Find My service")?;
+        let root = Url::parse(&format!("{}/", service.trim_end_matches('/')))?;
+        if root.scheme() != "https" {
+            bail!("Apple advertised a non-HTTPS Find My service URL");
+        }
+        let mut erase_url = root.join("fmipservice/client/web/remoteWipeWithUserAuth")?;
+        erase_url
+            .query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let erase_response = self
+            .client
+            .post(erase_url)
+            .headers(icloud_headers())
+            .json(&json!({
+                "authToken":erase_token,
+                "device":device_id,
+                "text":message.unwrap_or("This device has been erased."),
+                "passcode":""
+            }))
+            .send()
+            .context("Could not contact Apple's Find My erase service")?;
+        let erase_status = erase_response.status();
+        let erase_data = erase_response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(erase_status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the Find My erase request (HTTP {erase_status})"),
+                "refresh",
+            ));
+        }
+        if !erase_status.is_success() {
+            bail!("Apple Find My erase request failed (HTTP {erase_status})");
+        }
+        let erase_result_code = erase_data.get("statusCode").and_then(|code| {
+            code.as_i64()
+                .or_else(|| code.as_str().and_then(|value| value.parse::<i64>().ok()))
+        });
+        if erase_data
+            .get("error")
+            .is_some_and(|error| !error.is_null())
+            || erase_result_code.is_some_and(|code| code != 200)
+        {
+            bail!(
+                "Apple Find My erase request returned an error: {}",
+                erase_data
+                    .get("error")
+                    .or_else(|| erase_data.get("statusCode"))
+                    .unwrap_or(&Value::Null)
+            );
+        }
+        if erase_result_code != Some(200)
+            && erase_data.get("success").and_then(Value::as_bool) != Some(true)
+        {
+            bail!(
+                "Apple did not confirm the Find My erase request; inspect the device before retrying"
+            );
+        }
+        Ok(json!({"device_id":device_id,"action":"erase","accepted":true,"response":erase_data}))
+    }
+
+    fn advertised_service_url(&self, key: &str) -> Result<Url> {
+        let value = self
+            .session
+            .account_data
+            .pointer(&format!("/webservices/{key}/url"))
+            .and_then(Value::as_str)
+            .with_context(|| format!("Apple did not advertise the {key} service"))?;
+        let url = Url::parse(&format!("{}/", value.trim_end_matches('/')))
+            .with_context(|| format!("Apple advertised an invalid {key} service URL"))?;
+        if url.scheme() != "https" {
+            bail!("Apple advertised a non-HTTPS {key} service URL");
+        }
+        Ok(url)
+    }
+
+    fn advertised_service_post(&self, key: &str, path: &str, payload: &Value) -> Result<Value> {
+        self.require_authenticated()?;
+        let mut url = self.advertised_service_url(key)?.join(path)?;
+        url.query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .json(payload)
+            .send()
+            .with_context(|| format!("Could not contact Apple's {key} service"))?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the saved session during {key} access (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple {key} request failed (HTTP {status})");
+        }
+        Ok(data)
+    }
+
+    pub fn hide_my_email_request(
+        &self,
+        path: &str,
+        method: &str,
+        payload: Option<&Value>,
+    ) -> Result<Value> {
+        self.require_authenticated()?;
+        let url = self.advertised_service_url("hidemyemail")?.join(path)?;
+        let mut request = self
+            .client
+            .request(method.parse()?, url)
+            .headers(icloud_headers())
+            .query(&service_params(&self.session));
+        if let Some(payload) = payload {
+            request = request.json(payload);
+        }
+        let response = request
+            .send()
+            .context("Could not contact Apple's Hide My Email service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!(
+                    "Apple rejected the saved session during Hide My Email access (HTTP {status})"
+                ),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Hide My Email request failed (HTTP {status})");
+        }
+        if data.get("success").and_then(Value::as_bool) == Some(false) {
+            bail!(
+                "Apple Hide My Email rejected the request{}",
+                data.get("errorMessage")
+                    .and_then(Value::as_str)
+                    .map(|s| format!(": {s}"))
+                    .unwrap_or_default()
+            );
+        }
+        Ok(data.get("result").cloned().unwrap_or(data))
+    }
+
+    fn drive_node(&self, id: &str, share_id: Option<&Value>) -> Result<Value> {
+        let mut node = json!({"drivewsid":id,"partialData":false});
+        if let Some(share) = share_id {
+            node["shareID"] = share.clone();
+        }
+        let rows = self.advertised_service_post(
+            "drivews",
+            "retrieveItemDetailsInFolders",
+            &json!([node]),
+        )?;
+        rows.as_array()
+            .and_then(|items| items.first())
+            .cloned()
+            .context("Apple returned no iCloud Drive item")
+    }
+
+    pub fn drive_list(&self, path: &str) -> Result<Value> {
+        if path.chars().any(char::is_control) {
+            bail!("Drive path cannot contain control characters");
+        }
+        let parts = path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>();
+        if parts.iter().any(|part| *part == "." || *part == "..") {
+            bail!("Drive path cannot contain . or .. segments");
+        }
+        let mut node = self.drive_node("FOLDER::com.apple.CloudDocs::root", None)?;
+        for part in parts {
+            let items = node
+                .get("items")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_else(|| vec![]);
+            let child = items
+                .iter()
+                .find(|item| item.get("name").and_then(Value::as_str) == Some(part))
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "No iCloud Drive item named {part:?} in {}",
+                        node.get("name").and_then(Value::as_str).unwrap_or("/")
+                    )
+                })?;
+            if child
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("file"))
+            {
+                bail!("Drive path component {part:?} is a file, not a folder");
+            }
+            node = self.drive_node(
+                child
+                    .get("drivewsid")
+                    .and_then(Value::as_str)
+                    .context("Apple Drive folder has no ID")?,
+                child.get("shareID"),
+            )?;
+        }
+        let items = node
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| vec![]);
+        let items = items.into_iter().map(|item| json!({
+            "name":item.get("name"),"type":item.get("type"),"id":item.get("docwsid"),
+            "drive_id":item.get("drivewsid"),"zone":item.get("zone"),"size":item.get("size"),
+            "modified":item.get("dateModified"),"etag":item.get("etag")
+        })).collect::<Vec<_>>();
+        Ok(json!({"path":path,"folder":node.get("name"),"id":node.get("drivewsid"),"items":items}))
+    }
+
+    pub fn drive_download(&self, id: &str, zone: &str, output: &Path) -> Result<Value> {
+        if zone.is_empty() || zone.chars().any(|c| c.is_control() || c == '/') {
+            bail!("Invalid Drive zone");
+        }
+        let mut url = self
+            .advertised_service_url("docws")?
+            .join(&format!("ws/{zone}/download/by_id"))?;
+        url.query_pairs_mut()
+            .append_pair("document_id", id)
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .get(url)
+            .headers(icloud_headers())
+            .send()
+            .context("Could not request the iCloud Drive download")?;
+        let status = response.status();
+        let body = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the saved session during Drive download (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Drive download request failed (HTTP {status})");
+        }
+        let download_url = body
+            .pointer("/data_token/url")
+            .or_else(|| body.pointer("/package_token/url"))
+            .and_then(Value::as_str)
+            .context("Apple returned no iCloud Drive download URL")?;
+        let download_url =
+            Url::parse(download_url).context("Apple returned an invalid Drive download URL")?;
+        if download_url.scheme() != "https" {
+            bail!("Apple returned a non-HTTPS Drive download URL");
+        }
+        let mut response = self
+            .client
+            .get(download_url)
+            .send()
+            .context("Could not download the iCloud Drive file")?;
+        if !response.status().is_success() {
+            bail!(
+                "iCloud Drive file download failed (HTTP {})",
+                response.status()
+            );
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .with_context(|| {
+                format!(
+                    "Could not create {} without overwriting an existing file",
+                    output.display()
+                )
+            })?;
+        let bytes = std::io::copy(&mut response, &mut file)
+            .context("Could not write the iCloud Drive download")?;
+        Ok(json!({"id":id,"path":output,"bytes":bytes}))
+    }
+
+    fn photos_cloudkit_request(&self, path: &str, payload: &Value) -> Result<Value> {
+        self.require_authenticated()?;
+        let mut url = self
+            .advertised_service_url("photos")?
+            .join("database/1/com.apple.photos.cloud/production/private/")?;
+        url = url.join(path)?;
+        url.query_pairs_mut()
+            .append_pair("remapEnums", "true")
+            .append_pair("getCurrentSyncToken", "true")
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .header("content-type", "text/plain")
+            .body(payload.to_string())
+            .send()
+            .context("Could not contact Apple's Photos service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple rejected the saved session during Photos access (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Photos request failed (HTTP {status})");
+        }
+        Ok(data)
+    }
+
+    fn invites_cloudkit_request(&self, scope: &str, path: &str, payload: &Value) -> Result<Value> {
+        self.require_authenticated()?;
+        if !matches!(scope, "private" | "shared" | "public") {
+            bail!("Invalid Apple Invites database scope");
+        }
+        let service = self
+            .session
+            .account_data
+            .pointer("/webservices/ckdatabasews/url")
+            .and_then(Value::as_str)
+            .context("Apple did not advertise its CloudKit service")?;
+        let root = Url::parse(&format!("{}/", service.trim_end_matches('/')))
+            .context("Apple advertised an invalid CloudKit service URL")?;
+        if root.scheme() != "https" {
+            bail!("Apple advertised a non-HTTPS CloudKit service URL");
+        }
+        let mut url = root.join(&format!(
+            "database/1/com.apple.icloud.events/production/{scope}/{path}"
+        ))?;
+        url.query_pairs_mut()
+            .append_pair("remapEnums", "true")
+            .append_pair("getCurrentSyncToken", "true")
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .json(payload)
+            .send()
+            .context("Could not contact Apple's Invites CloudKit service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421)
+            || data.get("hsaChallengeRequired").and_then(Value::as_bool) == Some(true)
+        {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple Invites rejected the saved session (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Invites request failed (HTTP {status})");
+        }
+        Ok(data)
+    }
+
+    pub fn invites_list(&self) -> Result<Value> {
+        let mut records = self.invites_query_private()?;
+        let mut shared_zones = self
+            .invites_cloudkit_request("shared", "zones/list", &json!({}))?
+            .get("zones")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for zone in shared_zones.drain(..) {
+            let zone_id = match zone.get("zoneID") {
+                Some(zone_id) => zone_id.clone(),
+                None => continue,
+            };
+            let event_records = self.invites_zone_changes("shared", &zone_id, None)?;
+            for record in event_records {
+                if record.get("recordType").and_then(Value::as_str) == Some("EventDetails") {
+                    records.push((record, "shared", zone.get("zoneID").cloned()));
+                }
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let events = records
+            .into_iter()
+            .filter_map(|(record, scope, zone)| {
+                if record.get("recordType").and_then(Value::as_str) != Some("EventDetails") {
+                    return None;
+                }
+                let id = invites_event_id(&record)?;
+                if !seen.insert((scope, id.clone())) {
+                    return None;
+                }
+                Some(invites_event_summary(&record, &id, scope, zone.as_ref()))
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"events":events,"more_available":false}))
+    }
+
+    fn invites_query_private(&self) -> Result<Vec<(Value, &'static str, Option<Value>)>> {
+        let mut output = Vec::new();
+        let mut continuation: Option<String> = None;
+        for _ in 0..200 {
+            let mut request =
+                json!({"query":{"recordType":"EventDetails"},"zoneWide":true,"resultsLimit":200});
+            if let Some(marker) = &continuation {
+                request["continuationMarker"] = json!(marker);
+            }
+            let response = self.invites_cloudkit_request("private", "records/query", &request)?;
+            for record in response
+                .get("records")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if record.get("serverErrorCode").is_some() {
+                    continue;
+                }
+                output.push((record.clone(), "private", None));
+            }
+            continuation = response
+                .get("continuationMarker")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if continuation.is_none() {
+                return Ok(output);
+            }
+        }
+        bail!("Apple Invites query exceeded 200 pages; narrow the request and retry")
+    }
+
+    fn invites_zone_changes(
+        &self,
+        scope: &str,
+        zone_id: &Value,
+        desired_record_type: Option<&str>,
+    ) -> Result<Vec<Value>> {
+        let mut output = Vec::new();
+        let mut sync_token: Option<Value> = None;
+        for _ in 0..200 {
+            let mut zone = json!({"zoneID":zone_id});
+            if let Some(token) = &sync_token {
+                zone["syncToken"] = token.clone();
+            }
+            if let Some(record_type) = desired_record_type {
+                zone["desiredRecordTypes"] = json!([record_type]);
+            }
+            let response =
+                self.invites_cloudkit_request(scope, "changes/zone", &json!({"zones":[zone]}))?;
+            let page = response
+                .get("zones")
+                .and_then(Value::as_array)
+                .and_then(|zones| zones.first())
+                .context("Apple returned an invalid Invites changes response")?;
+            if let Some(code) = page.get("serverErrorCode").and_then(Value::as_str) {
+                bail!("Apple Invites zone read failed ({code})");
+            }
+            output.extend(
+                page.get("records")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+            sync_token = page.get("syncToken").cloned();
+            if page.get("moreComing").and_then(Value::as_bool) != Some(true) {
+                return Ok(output);
+            }
+        }
+        bail!("Apple Invites zone exceeded 200 change pages; retry later")
+    }
+
+    pub fn invites_event(&self, id: &str) -> Result<Value> {
+        let all = self.invites_list()?;
+        let event = all
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(id))
+            .cloned()
+            .context("No Apple Invites event matched that ID")?;
+        let scope = event
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("private");
+        let zone_id = event
+            .get("zone_id")
+            .cloned()
+            .unwrap_or_else(|| json!({"zoneName":id,"zoneType":"REGULAR_CUSTOM_ZONE"}));
+        let response = self.invites_cloudkit_request(scope, "records/lookup", &json!({
+            "records":[{"recordName":format!("EventDetails:{id}")},{"recordName":"cloudkit.zoneshare"}],"zoneID":zone_id
+        }))?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let event_record = records
+            .iter()
+            .find(|record| record.get("recordType").and_then(Value::as_str) == Some("EventDetails"))
+            .context("Apple Invites event details were not returned")?;
+        let share = records.iter().find(|record| {
+            record.get("recordType").and_then(Value::as_str) == Some("cloudkit.share")
+        });
+        let mut full = invites_event_summary(event_record, id, scope, Some(&zone_id));
+        if let Some(share) = share {
+            full["share"] = invites_share_summary(share);
+        }
+        Ok(full)
+    }
+
+    pub fn invites_rsvps(&self, id: &str) -> Result<Value> {
+        let event = self.invites_event(id)?;
+        let scope = event
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("private");
+        let zone_id = event
+            .get("zone_id")
+            .cloned()
+            .unwrap_or_else(|| json!({"zoneName":id,"zoneType":"REGULAR_CUSTOM_ZONE"}));
+        let records = self.invites_zone_changes(scope, &zone_id, Some("RSVP"))?;
+        let mut latest = BTreeMap::new();
+        for record in records {
+            let Some(name) = record.get("recordName").and_then(Value::as_str) else {
+                continue;
+            };
+            if record.get("deleted").and_then(Value::as_bool) == Some(true)
+                || record.get("recordType").is_none()
+            {
+                latest.remove(name);
+            } else if record.get("recordType").and_then(Value::as_str) == Some("RSVP") {
+                latest.insert(name.to_owned(), record);
+            }
+        }
+        let rsvps = latest
+            .values()
+            .map(invites_rsvp_summary)
+            .collect::<Vec<_>>();
+        Ok(json!({"event_id":id,"rsvps":rsvps}))
+    }
+
+    pub fn invites_resolve(&self, input: &str) -> Result<Value> {
+        let short_guid = invites_short_guid(input)?;
+        let response = self.invites_cloudkit_request(
+            "public",
+            "records/resolve",
+            &json!({"shortGUIDs":[{"value":short_guid}]}),
+        )?;
+        let result = response
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|results| results.first())
+            .context("Apple Invites resolve returned no result")?;
+        Ok(json!({
+            "short_guid":result.pointer("/shortGUID/value"),
+            "event_id":result.pointer("/zoneID/zoneName"),
+            "owner":result.get("ownerIdentity"),
+            "participant_status":result.get("participantStatus"),
+            "participant_type":result.get("participantType"),
+            "participant_permission":result.get("participantPermission")
+        }))
+    }
+
+    /// Join an Apple Invites event from its short link. Apple acceptance is a
+    /// write; the caller can preview the target first with `invites_resolve`.
+    pub fn invites_accept(&self, input: &str) -> Result<Value> {
+        let short_guid = invites_short_guid(input)?;
+        let response = self.invites_cloudkit_request(
+            "public",
+            "records/accept",
+            &json!({"shortGUIDs":[{"value":short_guid}]}),
+        )?;
+        let result = response
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|results| results.first())
+            .context("Apple Invites accept returned no result")?;
+        if let Some(code) = result.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Invites could not accept the link ({code})");
+        }
+        let event_id = result
+            .pointer("/zoneID/zoneName")
+            .and_then(Value::as_str)
+            .context("Apple Invites accept response omitted its event ID")?;
+        let mut event = self.invites_event(event_id)?;
+        event["accepted"] = json!(true);
+        Ok(event)
+    }
+
+    /// Submit or update the current user's RSVP for an Apple Invites event.
+    pub fn invites_rsvp(
+        &self,
+        id: &str,
+        status: i64,
+        name: Option<&str>,
+        message: Option<&str>,
+        additional_adults: u32,
+        additional_kids: u32,
+    ) -> Result<Value> {
+        if !(0..=3).contains(&status) {
+            bail!("RSVP status must be no-response, not-going, maybe, or going");
+        }
+        let event = self.invites_event(id)?;
+        let share = event
+            .get("share")
+            .context("Apple Invites event has no share record; no RSVP was sent")?;
+        let participant_id = share
+            .pointer("/current_user_participant/participantId")
+            .and_then(Value::as_str)
+            .context(
+                "Apple did not identify the current participant for this event; no RSVP was sent",
+            )?;
+        let scope = event
+            .get("scope")
+            .and_then(Value::as_str)
+            .filter(|scope| matches!(*scope, "private" | "shared"))
+            .context("Apple Invites event has an invalid database scope")?;
+        let zone_id = event
+            .get("zone_id")
+            .cloned()
+            .unwrap_or_else(|| json!({"zoneName":id,"zoneType":"REGULAR_CUSTOM_ZONE"}));
+        let record_name = format!("{participant_id}_rsvp");
+        let current = self
+            .invites_zone_changes(scope, &zone_id, Some("RSVP"))?
+            .into_iter()
+            .filter(|record| {
+                record.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())
+            })
+            .last();
+        let current = current.filter(|record| {
+            record.get("recordType").and_then(Value::as_str) == Some("RSVP")
+                && record.get("deleted").and_then(Value::as_bool) != Some(true)
+        });
+        let change_tag = current
+            .as_ref()
+            .and_then(|record| record.get("recordChangeTag"))
+            .cloned();
+        let op = if current.is_some() {
+            "update"
+        } else {
+            "create"
+        };
+        let (additional_adults, additional_kids) = if status == 1 {
+            (0, 0)
+        } else {
+            (additional_adults, additional_kids)
+        };
+        let mut fields = json!({
+            "status":{"type":"INT64","value":status,"isEncrypted":true},
+            "numAdditionalAdults":{"type":"INT64","value":additional_adults,"isEncrypted":true},
+            "numAdditionalKids":{"type":"INT64","value":additional_kids,"isEncrypted":true},
+            "numAdditionalGuests":{"type":"INT64","value":additional_adults + additional_kids,"isEncrypted":true}
+        });
+        if let Some(name) = name {
+            fields["name"] = json!({"type":"STRING","value":name,"isEncrypted":true});
+        }
+        if let Some(message) = message {
+            fields["message"] = json!({"type":"STRING","value":message,"isEncrypted":true});
+        }
+        let mut record = json!({"recordName":record_name,"recordType":"RSVP","fields":fields});
+        if let Some(change_tag) = change_tag {
+            record["recordChangeTag"] = change_tag;
+        }
+        let result = self.invites_cloudkit_request(
+            scope,
+            "records/modify",
+            &json!({
+                "atomic":true,"zoneID":zone_id,
+                "operations":[{"operationType":op,"record":record}]
+            }),
+        )?;
+        let saved = result
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| records.iter().find(|r| r.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())))
+            .context("Apple accepted the RSVP request without confirming its record; inspect the event before retrying")?;
+        if let Some(code) = saved.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Invites RSVP failed ({code})");
+        }
+        let verify = self.invites_cloudkit_request(
+            scope,
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":record_name}],"zoneID":zone_id
+            }),
+        )?;
+        let verified = verify
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| records.iter().find(|r| r.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())))
+            .context("Apple accepted the RSVP but readback did not confirm it; inspect the event before retrying")?;
+        if invites_field(verified.get("fields"), "status").and_then(Value::as_i64) != Some(status) {
+            bail!(
+                "Apple accepted the RSVP but readback differs; inspect the event before retrying"
+            );
+        }
+        Ok(json!({"event_id":id,"rsvp":invites_rsvp_summary(verified),"verified":true}))
+    }
+
+    pub fn photos_shared_album(&self, shared_url: &str, limit: usize) -> Result<Value> {
+        if limit == 0 || limit > 1000 {
+            bail!("Shared Photos --limit must be from 1 to 1000");
+        }
+        let token = shared_album_token(shared_url)?;
+        let partition = shared_album_partition(&token)?;
+        let base = format!("https://p{partition}-sharedstreams.icloud.com");
+        let (host, response) =
+            self.shared_album_request(&base, &token, "webstream", &json!({"streamCtag":null}))?;
+        let photos = response
+            .get("photos")
+            .and_then(Value::as_array)
+            .context("Apple returned a shared album response without a photos array")?;
+        let photos = photos
+            .iter()
+            .take(limit)
+            .map(|photo| {
+                json!({
+                    "id":photo.get("photoGuid"),
+                    "caption":photo.get("caption"),
+                    "created":photo.get("dateCreated"),
+                    "media_type":photo.get("mediaAssetType"),
+                    "derivatives":photo.get("derivatives")
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "kind":"shared-album",
+            "album_id":token,
+            "album_name":response.get("streamName"),
+            "owner":response.get("streamOwnerContactName"),
+            "sharedstreams_host":host,
+            "photos":photos,
+            "count":photos.len(),
+            "truncated":response.get("photos").and_then(Value::as_array).is_some_and(|all|all.len()>limit)
+        }))
+    }
+
+    pub fn photos_shared_streams(&self) -> Result<Value> {
+        self.require_authenticated()?;
+        let dsid = self
+            .session
+            .account_data
+            .pointer("/dsInfo/dsid")
+            .and_then(Value::as_str)
+            .context("Apple did not provide an account identifier for Shared Albums")?;
+        let mut url = self
+            .advertised_service_url("sharedstreams")?
+            .join(&format!("{dsid}/sharedstreams/webgetalbumslist"))?;
+        url.query_pairs_mut()
+            .extend_pairs(service_params(&self.session));
+        let response = self
+            .client
+            .post(url)
+            .header(reqwest::header::CONTENT_TYPE, "text/plain")
+            .json(&json!({}))
+            .send()
+            .context("Could not contact Apple's Shared Albums service")?;
+        let status = response.status();
+        let data = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421) {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!(
+                    "Apple rejected the saved session during Shared Albums access (HTTP {status})"
+                ),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Shared Albums request failed (HTTP {status})");
+        }
+        let albums = data
+            .get("albums")
+            .and_then(Value::as_array)
+            .context("Apple returned a Shared Albums response without an albums array")?;
+        Ok(json!({"kind":"shared-streams","albums":albums,"count":albums.len()}))
+    }
+
+    pub fn photos_shared_album_download(
+        &self,
+        shared_url: &str,
+        output_dir: &Path,
+        limit: usize,
+    ) -> Result<Value> {
+        if limit == 0 || limit > 1000 {
+            bail!("Shared Photos --limit must be from 1 to 1000");
+        }
+        let token = shared_album_token(shared_url)?;
+        let partition = shared_album_partition(&token)?;
+        let base = format!("https://p{partition}-sharedstreams.icloud.com");
+        let (host, album) =
+            self.shared_album_request(&base, &token, "webstream", &json!({"streamCtag":null}))?;
+        let photos = album
+            .get("photos")
+            .and_then(Value::as_array)
+            .context("Apple returned a shared album response without a photos array")?;
+        let photos = photos.iter().take(limit).collect::<Vec<_>>();
+        let ids = photos
+            .iter()
+            .filter_map(|photo| photo.get("photoGuid").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        if ids.len() != photos.len() {
+            bail!("Shared album response included an asset without a photo ID");
+        }
+        fs::create_dir_all(output_dir).with_context(|| {
+            format!(
+                "Could not create shared Photos directory {}",
+                output_dir.display()
+            )
+        })?;
+        let mut downloaded = Vec::new();
+        let mut skipped = 0usize;
+        for batch in ids.chunks(100) {
+            let (_, urls) = self.shared_album_request(
+                &host,
+                &token,
+                "webasseturls",
+                &json!({"photoGuids":batch}),
+            )?;
+            let items = urls
+                .get("items")
+                .and_then(Value::as_object)
+                .context("Apple returned invalid shared Photos asset URLs")?;
+            for photo in photos.iter().filter(|photo| {
+                photo
+                    .get("photoGuid")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| batch.contains(&id))
+            }) {
+                let photo_id = photo["photoGuid"].as_str().unwrap_or_default();
+                let derivatives = photo
+                    .get("derivatives")
+                    .and_then(Value::as_object)
+                    .context("Shared photo has no downloadable derivatives")?;
+                let (checksum, _) = derivatives
+                    .iter()
+                    .filter_map(|(size, derivative)| {
+                        let checksum = derivative.get("checksum")?.as_str()?;
+                        Some((checksum, size.parse::<u64>().unwrap_or(0)))
+                    })
+                    .max_by_key(|(_, size)| *size)
+                    .context("Shared photo has no derivative checksum")?;
+                let item = items
+                    .get(checksum)
+                    .context("Apple omitted a signed shared photo URL")?;
+                let asset_host = item
+                    .get("url_location")
+                    .and_then(Value::as_str)
+                    .context("Apple returned a shared photo URL without a host")?;
+                if !(asset_host == "icloud-content.com"
+                    || asset_host.ends_with(".icloud-content.com"))
+                {
+                    bail!("Apple returned an unexpected shared photo asset host");
+                }
+                let path = item
+                    .get("url_path")
+                    .and_then(Value::as_str)
+                    .context("Apple returned a shared photo URL without a path")?;
+                let asset_url = Url::parse(&format!("https://{asset_host}{path}"))?;
+                if asset_url.scheme() != "https" {
+                    bail!("Apple returned a non-HTTPS shared photo asset URL");
+                }
+                let response = self
+                    .client
+                    .get(asset_url.as_str())
+                    .send()
+                    .context("Could not download a shared Photos asset")?;
+                if !response.status().is_success() {
+                    bail!(
+                        "Shared Photos asset download failed (HTTP {})",
+                        response.status()
+                    );
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("");
+                let extension = if content_type.contains("video/quicktime") {
+                    "mov"
+                } else if content_type.contains("video/") {
+                    "mp4"
+                } else if content_type.contains("png") {
+                    "png"
+                } else if content_type.contains("webp") {
+                    "webp"
+                } else {
+                    "jpg"
+                };
+                let filename =
+                    photos_safe_filename(&format!("shared-{photo_id}.{extension}"), photo_id);
+                let target = output_dir.join(filename);
+                if target.exists() {
+                    skipped += 1;
+                    continue;
+                }
+                let bytes = response
+                    .bytes()
+                    .context("Could not read shared Photos asset bytes")?;
+                let temporary = output_dir.join(format!(".icli-shared-{}.part", Uuid::new_v4()));
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&temporary)
+                    .context("Could not create a temporary Shared Album download")?;
+                if let Err(error) = file.write_all(&bytes) {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(error).context("Could not write Shared Album asset bytes");
+                }
+                drop(file);
+                if let Err(error) = fs::hard_link(&temporary, &target) {
+                    let _ = fs::remove_file(&temporary);
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        skipped += 1;
+                        continue;
+                    }
+                    return Err(error).with_context(|| {
+                        format!("Could not create {} without overwriting", target.display())
+                    });
+                }
+                fs::remove_file(&temporary)
+                    .context("Could not remove temporary Shared Album download")?;
+                downloaded.push(json!({"id":photo_id,"path":target,"bytes":bytes.len()}));
+            }
+        }
+        Ok(
+            json!({"album_id":token,"directory":output_dir,"downloaded":downloaded,"downloaded_count":downloaded.len(),"already_present":skipped,"truncated":album.get("photos").and_then(Value::as_array).is_some_and(|all|all.len()>limit)}),
+        )
+    }
+
+    fn shared_album_request(
+        &self,
+        base: &str,
+        token: &str,
+        endpoint: &str,
+        payload: &Value,
+    ) -> Result<(String, Value)> {
+        let mut current_base = base.to_owned();
+        for attempt in 0..=1 {
+            let url = format!("{current_base}/{token}/sharedstreams/{endpoint}");
+            let response = self
+                .client
+                .post(&url)
+                .header(reqwest::header::CONTENT_TYPE, "text/plain")
+                .header(reqwest::header::CACHE_CONTROL, "no-cache")
+                .json(payload)
+                .send()
+                .context("Could not contact Apple's shared Photos service")?;
+            let status = response.status();
+            let data = response.json::<Value>().unwrap_or(Value::Null);
+            if status.as_u16() == 330 && attempt == 0 {
+                let redirected = data
+                    .get("X-Apple-MMe-Host")
+                    .and_then(Value::as_str)
+                    .context("Apple redirected shared Photos without a host")?;
+                let parsed = Url::parse(&format!("https://{redirected}"))
+                    .context("Apple returned an invalid shared Photos redirect")?;
+                if parsed.scheme() != "https"
+                    || parsed.host_str() != Some(redirected)
+                    || !redirected.ends_with(".icloud.com")
+                {
+                    bail!("Apple returned an unexpected shared Photos redirect host");
+                }
+                current_base = parsed
+                    .origin()
+                    .ascii_serialization()
+                    .trim_end_matches('/')
+                    .to_owned();
+                continue;
+            }
+            if !status.is_success() {
+                bail!("Apple shared Photos request failed (HTTP {status})");
+            }
+            return Ok((current_base, data));
+        }
+        bail!("Apple shared Photos redirect could not be resolved")
+    }
+
+    pub fn photos_albums(&self) -> Result<Value> {
+        let response = self.photos_cloudkit_request("records/query", &json!({"query":{"recordType":"CPLAlbumByPositionLive"},"zoneID":{"zoneName":"PrimarySync"},"resultsLimit":200}))?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .context("Apple returned an invalid Photos albums response")?;
+        let mut albums = records.iter().filter_map(|record| {
+            let fields=record.get("fields")?;
+            let name=fields.get("albumNameEnc")?.get("value")?.as_str()?;
+            let decoded=STANDARD.decode(name).ok()?;
+            let name=String::from_utf8(decoded).ok()?;
+            Some(json!({"id":record.get("recordName"),"name":name,"deleted":fields.get("isDeleted").and_then(|v|v.get("value")).and_then(Value::as_i64).unwrap_or(0)!=0}))
+        }).filter(|album| album["deleted"].as_bool()!=Some(true)).collect::<Vec<_>>();
+        albums.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        Ok(
+            json!({"library":"private","albums":albums,"smart_albums":["All Photos","Videos","Favorites","Screenshots","Recently Deleted","Hidden"]}),
+        )
+    }
+
+    pub fn photos_libraries(&self) -> Result<Value> {
+        let response = self.photos_cloudkit_request("zones/list", &json!({}))?;
+        let zones = response
+            .get("zones")
+            .and_then(Value::as_array)
+            .context("Apple returned an invalid Photos libraries response")?;
+        let mut libraries = zones
+            .iter()
+            .filter(|zone| zone.get("deleted").and_then(Value::as_bool) != Some(true))
+            .filter_map(|zone| {
+                let name = zone.pointer("/zoneID/zoneName")?.as_str()?;
+                Some(json!({
+                    "id": if name == "PrimarySync" { "private".to_owned() } else { name.to_owned() },
+                    "name": if name == "PrimarySync" { "Private Library".to_owned() } else { format!("Shared Library ({name})") },
+                    "zone_name": name,
+                    "scope": if name == "PrimarySync" { "private" } else { "shared" }
+                }))
+            })
+            .collect::<Vec<_>>();
+        if !libraries.iter().any(|library| library["id"] == "private") {
+            libraries.insert(0, json!({"id":"private","name":"Private Library","zone_name":"PrimarySync","scope":"private"}));
+        }
+        Ok(json!({"libraries":libraries,"count":libraries.len()}))
+    }
+
+    pub fn photos_sync_cursor(&self) -> Result<Value> {
+        let response = self.photos_cloudkit_request("zones/list", &json!({}))?;
+        let zone = response
+            .get("zones")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|zone| {
+                zone.pointer("/zoneID/zoneName").and_then(Value::as_str) == Some("PrimarySync")
+            })
+            .context("Apple did not return the private Photos library zone")?;
+        let cursor = zone
+            .get("syncToken")
+            .cloned()
+            .context("Apple did not return a Photos sync cursor")?;
+        Ok(json!({"library":"private","sync_cursor":cursor}))
+    }
+
+    pub fn photos_changes(&self, since: &str, limit: usize) -> Result<Value> {
+        if since.is_empty() || since.chars().any(char::is_control) {
+            bail!("Provide a Photos sync cursor from `icli photos sync-cursor`");
+        }
+        if limit == 0 || limit > 1000 {
+            bail!("Photos changes --limit must be from 1 to 1000");
+        }
+        let mut cursor = serde_json::from_str::<Value>(since).unwrap_or_else(|_| json!(since));
+        let mut changes = Vec::new();
+        let mut pages = 0usize;
+        let mut more = true;
+        while more && changes.len() < limit && pages < 200 {
+            let response = self.photos_cloudkit_request("changes/zone", &json!({
+                "zones":[{"zoneID":{"zoneName":"PrimarySync","zoneType":"REGULAR_CUSTOM_ZONE"},"syncToken":cursor,"reverse":false,"desiredRecordTypes":["CPLAsset","CPLMaster"]}],
+                "resultsLimit":limit.saturating_sub(changes.len()).max(1)
+            }))?;
+            let zone = response
+                .get("zones")
+                .and_then(Value::as_array)
+                .and_then(|zones| zones.first())
+                .context("Apple returned an invalid Photos changes response")?;
+            if let Some(code) = zone.get("serverErrorCode").and_then(Value::as_str) {
+                bail!("Apple Photos changes request failed ({code})");
+            }
+            if let Some(next_cursor) = zone.get("syncToken") {
+                cursor = next_cursor.clone();
+            }
+            changes.extend(
+                zone.get("records")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|record| {
+                        let id = record.get("recordName")?.as_str()?;
+                        Some(json!({
+                            "id":id,
+                            "type":record.get("recordType"),
+                            "master_id":if record.get("recordType").and_then(Value::as_str) == Some("CPLAsset") { record.pointer("/fields/masterRef/value/recordName") } else { None },
+                            "deleted":record.get("deleted").and_then(Value::as_bool).unwrap_or(record.get("recordType").is_none()),
+                            "modified":record.get("modified")
+                        }))
+                    }),
+            );
+            if changes.len() > limit {
+                changes.truncate(limit);
+            }
+            more = zone.get("moreComing").and_then(Value::as_bool) == Some(true);
+            pages += 1;
+        }
+        if more && pages >= 200 {
+            bail!(
+                "Photos changes exceeded 200 pages; save the returned cursor and retry with a narrower workflow"
+            );
+        }
+        Ok(
+            json!({"library":"private","changes":changes,"sync_cursor":cursor,"more_available":more}),
+        )
+    }
+
+    pub fn photos_list(&self, skip: usize, limit: usize, album: Option<&str>) -> Result<Value> {
+        if limit == 0 || limit > 100 {
+            bail!("Photos --limit must be from 1 to 100");
+        }
+        let (record_type, album_filter) = match album.map(str::trim).filter(|name| !name.is_empty())
+        {
+            None | Some("All Photos") | Some("Library") => ("CPLAssetAndMasterByAddedDate", None),
+            Some(name) => {
+                let smart = match name.to_ascii_lowercase().as_str() {
+                    "favorites" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Favorite")),
+                    "screenshots" => {
+                        Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Screenshot"))
+                    }
+                    "videos" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Video")),
+                    "live" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Live")),
+                    "panoramas" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Panorama")),
+                    "slo-mo" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Slomo")),
+                    "time-lapse" => Some(("CPLAssetAndMasterInSmartAlbumByAssetDate", "Timelapse")),
+                    "hidden" => Some(("CPLAssetAndMasterHiddenByAssetDate", "")),
+                    "recently deleted" => Some(("CPLAssetAndMasterDeletedByExpungedDate", "")),
+                    _ => None,
+                };
+                if let Some((record_type, smart_album)) = smart {
+                    let filter = (!smart_album.is_empty()).then(|| json!({"fieldName":"smartAlbum","fieldValue":{"type":"STRING","value":smart_album},"comparator":"EQUALS"}));
+                    (record_type, filter)
+                } else {
+                    let albums = self.photos_albums()?;
+                    let album_id = albums
+                        .get("albums")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .find(|item| {
+                            item.get("name")
+                                .and_then(Value::as_str)
+                                .is_some_and(|album_name| album_name.eq_ignore_ascii_case(name))
+                        })
+                        .and_then(|item| item.get("id"))
+                        .and_then(Value::as_str)
+                        .with_context(|| format!("No iCloud Photos album matched '{name}'"))?;
+                    (
+                        "CPLContainerRelationLiveByAssetDate",
+                        Some(
+                            json!({"fieldName":"parentId","fieldValue":{"type":"STRING","value":album_id},"comparator":"EQUALS"}),
+                        ),
+                    )
+                }
+            }
+        };
+        let mut filters = vec![
+            json!({"fieldName":"startRank","fieldValue":{"type":"INT64","value":skip as i64},"comparator":"EQUALS"}),
+            json!({"fieldName":"direction","fieldValue":{"type":"STRING","value":"ASCENDING"},"comparator":"EQUALS"}),
+        ];
+        if let Some(filter) = album_filter {
+            filters.push(filter);
+        }
+        let request = json!({
+            "query":{"recordType":record_type,"filterBy":filters},"resultsLimit":limit.saturating_mul(2).min(200),"zoneID":{"zoneName":"PrimarySync"},
+            "desiredKeys":["filenameEnc","assetDate","addedDate","isFavorite","isHidden","itemType","resOriginalWidth","resOriginalHeight","resOriginalRes","masterRef","recordName","recordType"]
+        });
+        let response = self.photos_cloudkit_request("records/query", &request)?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .context("Apple returned an invalid Photos asset response")?;
+        let assets = records
+            .iter()
+            .filter(|r| r.get("recordType").and_then(Value::as_str) == Some("CPLAsset"))
+            .filter_map(|r| {
+                r.get("fields")
+                    .and_then(|f| f.get("masterRef"))
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.get("recordName"))
+                    .and_then(Value::as_str)
+                    .map(|name| (name, r))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let masters=records.iter().filter(|r|r.get("recordType").and_then(Value::as_str)==Some("CPLMaster")).take(limit).map(|master| {
+            let fields=master.get("fields");
+            let name=fields.and_then(|f|f.get("filenameEnc")).and_then(|v|v.get("value")).and_then(Value::as_str).and_then(|v|STANDARD.decode(v).ok()).map(|v|String::from_utf8_lossy(&v).to_string());
+            let asset_id=master.get("recordName").and_then(Value::as_str).unwrap_or_default();
+            let asset=assets.get(asset_id).and_then(|r|r.get("fields"));
+            json!({"id":asset_id,"filename":name,"date":asset.and_then(|f|f.get("assetDate")).and_then(|v|v.get("value")),"added":asset.and_then(|f|f.get("addedDate")).and_then(|v|v.get("value")),"favorite":asset.and_then(|f|f.get("isFavorite")).and_then(|v|v.get("value")),"hidden":asset.and_then(|f|f.get("isHidden")).and_then(|v|v.get("value")),"width":fields.and_then(|f|f.get("resOriginalWidth")).and_then(|v|v.get("value")),"height":fields.and_then(|f|f.get("resOriginalHeight")).and_then(|v|v.get("value")),"size":fields.and_then(|f|f.get("resOriginalRes")).and_then(|v|v.get("value")).and_then(|v|v.get("size"))})
+        }).collect::<Vec<_>>();
+        Ok(
+            json!({"skip":skip,"limit":limit,"photos":masters,"more_available":response.get("continuationMarker").and_then(Value::as_str).is_some()}),
+        )
+    }
+
+    pub fn photos_get(&self, id: &str) -> Result<Value> {
+        let response = self.photos_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":id}],
+                "zoneID":{"zoneName":"PrimarySync"},
+                "desiredKeys":[
+                    "filenameEnc","assetDate","addedDate","isFavorite","isHidden","itemType",
+                    "resOriginalWidth","resOriginalHeight","resOriginalRes",
+                    "resJPEGMedRes","resJPEGMedWidth","resJPEGMedHeight",
+                    "resJPEGThumbRes","resJPEGThumbWidth","resJPEGThumbHeight",
+                    "resVidMedRes","resVidSmallRes","recordChangeTag"
+                ]
+            }),
+        )?;
+        let record = response
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| r.get("recordName").and_then(Value::as_str) == Some(id))
+            })
+            .context("No iCloud Photos asset matched that ID")?;
+        if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Photos lookup failed ({code})")
+        }
+        Ok(record.clone())
+    }
+
+    pub fn photos_download(&self, id: &str, version: &str, output: &Path) -> Result<Value> {
+        let record = self.photos_get(id)?;
+        let version_key = match version {
+            "original" => "resOriginalRes",
+            "medium" => {
+                if record.pointer("/fields/resVidMedRes").is_some() {
+                    "resVidMedRes"
+                } else {
+                    "resJPEGMedRes"
+                }
+            }
+            "thumbnail" => {
+                if record.pointer("/fields/resVidSmallRes").is_some() {
+                    "resVidSmallRes"
+                } else {
+                    "resJPEGThumbRes"
+                }
+            }
+            _ => bail!("Photo version must be original, medium, or thumbnail"),
+        };
+        let url = record
+            .pointer(&format!("/fields/{version_key}/value/downloadURL"))
+            .and_then(Value::as_str)
+            .context("Apple did not return an original photo download URL")?;
+        let url = Url::parse(url).context("Apple returned an invalid photo download URL")?;
+        if url.scheme() != "https" {
+            bail!("Apple returned a non-HTTPS photo download URL")
+        }
+        let mut response = self
+            .client
+            .get(url)
+            .send()
+            .context("Could not download the iCloud photo")?;
+        if !response.status().is_success() {
+            bail!("iCloud Photos download failed (HTTP {})", response.status())
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .with_context(|| {
+                format!(
+                    "Could not create {} without overwriting an existing file",
+                    output.display()
+                )
+            })?;
+        let bytes =
+            std::io::copy(&mut response, &mut file).context("Could not save the iCloud photo")?;
+        Ok(json!({"id":id,"version":version,"path":output,"bytes":bytes}))
+    }
+
+    pub fn photos_sync(&self, directory: &Path, album: Option<&str>) -> Result<Value> {
+        fs::create_dir_all(directory).with_context(|| {
+            format!(
+                "Could not create Photos sync directory {}",
+                directory.display()
+            )
+        })?;
+        let mut skip = 0usize;
+        let mut downloaded = Vec::new();
+        let mut present = 0usize;
+        loop {
+            let page = self.photos_list(skip, 100, album)?;
+            let photos = page
+                .get("photos")
+                .and_then(Value::as_array)
+                .context("Photos list response omitted its photos array")?;
+            if photos.is_empty() {
+                break;
+            }
+            for photo in photos {
+                let id = photo
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .context("Photos list returned an asset without an ID")?;
+                let name = photo
+                    .get("filename")
+                    .and_then(Value::as_str)
+                    .unwrap_or("photo");
+                if let Some(saved) = self.photos_sync_one(directory, id, name)? {
+                    downloaded.push(saved);
+                } else {
+                    present += 1;
+                }
+            }
+            skip = skip.saturating_add(photos.len());
+            if photos.len() < 100 {
+                break;
+            }
+        }
+        Ok(
+            json!({"directory":directory,"album":album,"downloaded":downloaded,"downloaded_count":downloaded.len(),"already_present":present}),
+        )
+    }
+
+    pub fn photos_watch(&self, directory: &Path, album: Option<&str>, interval: u64) -> Result<()> {
+        if !(60..=86_400).contains(&interval) {
+            bail!("Photos watch interval must be from 60 to 86400 seconds");
+        }
+        let mut cursor = self
+            .photos_sync_cursor()?
+            .pointer("/sync_cursor")
+            .and_then(Value::as_str)
+            .context("Apple returned an invalid Photos sync cursor")?
+            .to_owned();
+        let initial = self.photos_sync(directory, album)?;
+        eprintln!(
+            "Initial Photos sync: {} new, {} already present",
+            initial["downloaded_count"], initial["already_present"]
+        );
+        loop {
+            thread::sleep(Duration::from_secs(interval));
+            let mut new_count = 0usize;
+            loop {
+                let changes = self.photos_changes(&cursor, 1000)?;
+                cursor = changes
+                    .pointer("/sync_cursor")
+                    .and_then(Value::as_str)
+                    .context("Apple omitted the next Photos sync cursor")?
+                    .to_owned();
+                for change in changes
+                    .get("changes")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if change.get("deleted").and_then(Value::as_bool) == Some(true) {
+                        continue;
+                    }
+                    let id = match change.get("type").and_then(Value::as_str) {
+                        Some("CPLMaster") => change.get("id").and_then(Value::as_str),
+                        Some("CPLAsset") => change.get("master_id").and_then(Value::as_str),
+                        _ => None,
+                    };
+                    let Some(id) = id else { continue };
+                    if self.photos_sync_changed_asset(directory, id)?.is_some() {
+                        new_count += 1;
+                    }
+                }
+                if changes.get("more_available").and_then(Value::as_bool) != Some(true) {
+                    break;
+                }
+            }
+            eprintln!("Photos changes applied: {new_count} new files");
+        }
+    }
+
+    fn photos_sync_one(&self, directory: &Path, id: &str, filename: &str) -> Result<Option<Value>> {
+        let target = directory.join(photos_safe_filename(filename, id));
+        if target.exists() {
+            return Ok(None);
+        }
+        let temporary = directory.join(format!(".icli-photos-{}.part", Uuid::new_v4()));
+        if let Err(error) = self.photos_download(id, "original", &temporary) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error).with_context(|| format!("Could not sync photo {id}"));
+        }
+        if let Err(error) = fs::hard_link(&temporary, &target) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error).with_context(|| {
+                format!(
+                    "Could not create Photos sync file {} without overwriting",
+                    target.display()
+                )
+            });
+        }
+        fs::remove_file(&temporary).with_context(|| {
+            format!(
+                "Could not remove temporary Photos file {}",
+                temporary.display()
+            )
+        })?;
+        Ok(Some(json!({"id":id,"path":target})))
+    }
+
+    fn photos_sync_changed_asset(&self, directory: &Path, id: &str) -> Result<Option<Value>> {
+        let record = self.photos_get(id)?;
+        let filename = record
+            .pointer("/fields/filenameEnc/value")
+            .and_then(Value::as_str)
+            .and_then(|encoded| STANDARD.decode(encoded).ok())
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_else(|| "photo".to_owned());
+        self.photos_sync_one(directory, id, &filename)
     }
 
     pub fn require_authenticated(&self) -> Result<()> {
@@ -974,6 +2691,54 @@ impl AppleConnection {
         Ok((rows, more, cursor))
     }
 
+    /// Search decrypted note titles and bodies. This is intentionally opt-in
+    /// and restricted to --all so callers know it scans and downloads notes.
+    pub fn notes_search_content(
+        &mut self,
+        query: &str,
+        skip: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, bool, usize)> {
+        let query = query.trim();
+        if query.is_empty() || query.len() > 256 || query.chars().any(char::is_control) {
+            bail!(
+                "Invalid Notes content query; use 1 to 256 characters without control characters"
+            );
+        }
+        if limit == 0 {
+            return Ok((Vec::new(), false, 0));
+        }
+        let (notes, _, _) = self.notes_list_all(0, usize::MAX, None, None)?;
+        let needle = query.to_lowercase();
+        let mut matches = Vec::new();
+        let mut unavailable = 0;
+        for note in notes {
+            if note["deleted"].as_bool() == Some(true) {
+                continue;
+            }
+            let Some(id) = note["id"].as_str() else {
+                continue;
+            };
+            let full = self.notes_get(id, false)?;
+            let text = full["text"].as_str();
+            if text.is_none() {
+                unavailable += 1;
+            }
+            let title = note["title"].as_str().unwrap_or_default();
+            if title.to_lowercase().contains(&needle)
+                || text.is_some_and(|body| body.to_lowercase().contains(&needle))
+            {
+                matches.push(note);
+            }
+        }
+        let more = matches.len() > skip.saturating_add(limit);
+        Ok((
+            matches.into_iter().skip(skip).take(limit).collect(),
+            more,
+            unavailable,
+        ))
+    }
+
     pub fn notes_recent_in_folder(
         &mut self,
         folder_id: &str,
@@ -1141,7 +2906,7 @@ impl AppleConnection {
         let response = self.notes_cloudkit_request("records/lookup", &json!({
             "records":[{"recordName":notes_record_name(id,"Note")}],
             "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
-            "desiredKeys":["TitleEncrypted","SnippetEncrypted","TextDataEncrypted","ModificationDate","Deleted","Folder","Attachments"]
+            "desiredKeys":["TitleEncrypted","SnippetEncrypted","TextDataEncrypted","ModificationDate","Deleted","Folder","Attachments","ReplicaIDToNotesVersionDataEncrypted"]
         }))?;
         let record_name = notes_record_name(id, "Note");
         let record = response
@@ -1169,6 +2934,178 @@ impl AppleConnection {
             row["attachments"] = json!(self.notes_attachment_metadata(id)?);
         }
         Ok(row)
+    }
+
+    /// Create a basic plaintext Apple Note. Notes stores body text in a
+    /// compressed topotext document; CloudKit handles field encryption.
+    pub fn notes_create(&mut self, title: &str, body: &str, folder: Option<&str>) -> Result<Value> {
+        let next = format!("icli notes create --title {}", crate::cli_quote(title));
+        self.request_notes_pcs_access(&next)?;
+        let title = title.trim();
+        if title.is_empty() && body.trim().is_empty() {
+            bail!("A note needs a non-empty title or body");
+        }
+        let folder_id = folder.unwrap_or("DefaultFolder-CloudKit");
+        if folder_id.is_empty() || folder_id.chars().any(char::is_control) {
+            bail!("Invalid Notes folder ID");
+        }
+        let (note_text, note_title, snippet) = notes_compose_text(title, body);
+        let replica = Uuid::new_v4().into_bytes();
+        let encoded = encode_new_note_body(&replica, &note_text)?;
+        let now = Utc::now().timestamp_millis();
+        let record_name = Uuid::new_v4().to_string().to_uppercase();
+        let response = self.notes_cloudkit_request(
+            "records/modify",
+            &json!({
+                "atomic":true,
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "operations":[{"operationType":"create","record":{
+                    "recordName":record_name,"recordType":"Note","fields":{
+                        "TextDataEncrypted":{"type":"ENCRYPTED_BYTES","value":STANDARD.encode(encoded)},
+                        "TitleEncrypted":{"type":"ENCRYPTED_STRING","value":STANDARD.encode(note_title.as_bytes())},
+                        "SnippetEncrypted":{"type":"ENCRYPTED_STRING","value":STANDARD.encode(snippet.as_bytes())},
+                        "Folder":{"type":"REFERENCE","value":{"recordName":folder_id,"action":"NONE","zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"}}},
+                        "CreationDate":{"type":"TIMESTAMP","value":now},
+                        "ModificationDate":{"type":"TIMESTAMP","value":now}
+                    }
+                }}]
+            }),
+        )?;
+        let result = cloudkit_single_record(&response, "Apple Notes create")?;
+        if let Some(code) = result.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes create failed ({code})");
+        }
+        let id = result
+            .get("recordName")
+            .and_then(Value::as_str)
+            .unwrap_or(&record_name);
+        let verified = self.notes_get(id, false)?;
+        if verified.get("title").and_then(Value::as_str) != Some(note_title.as_str())
+            || verified.get("text").and_then(Value::as_str) != Some(note_text.as_str())
+        {
+            bail!(
+                "Apple accepted the note create, but readback differs; inspect Notes before retrying"
+            );
+        }
+        Ok(json!({"id":id,"title":note_title,"folder_id":folder_id,"created":true,"verified":true}))
+    }
+
+    /// Replace a note's plain text while preserving its folder and creation
+    /// date. Rich formatting and attachments are intentionally not round-tripped.
+    pub fn notes_update(
+        &mut self,
+        id: &str,
+        title: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<Value> {
+        if title.is_none() && body.is_none() {
+            bail!("Provide --title or --body to update");
+        }
+        let next = format!("icli notes update {} --body TEXT", crate::cli_quote(id));
+        self.request_notes_pcs_access(&next)?;
+        let record_name = notes_record_name(id, "Note");
+        let lookup = self.notes_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":record_name}],
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredKeys":["TitleEncrypted","SnippetEncrypted","TextDataEncrypted","Folder","Deleted","Attachments","share","participants","ReplicaIDToNotesVersionDataEncrypted"]
+            }),
+        )?;
+        let record = cloudkit_single_record(&lookup, "Apple Notes lookup")?;
+        if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes lookup failed ({code})");
+        }
+        if record.get("recordType").and_then(Value::as_str) != Some("Note") {
+            bail!("Only regular Apple Notes can be edited by this command");
+        }
+        let fields = record
+            .get("fields")
+            .context("Apple Notes record has no fields")?;
+        if notes_summary(record)["shared"].as_bool() == Some(true) {
+            bail!("This Apple note is shared; no update was sent");
+        }
+        if cloudkit_field_truthy(Some(fields), "Deleted") {
+            bail!("This Apple note is deleted; no update was sent");
+        }
+        if notes_attachment_ids(Some(fields))
+            .as_array()
+            .is_some_and(|items| !items.is_empty())
+        {
+            bail!(
+                "This note has attachments; plain-text update would remove or detach them, so no update was sent"
+            );
+        }
+        let old_title = notes_field_text(Some(fields), "TitleEncrypted")
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let encoded_body = notes_field_bytes(Some(fields), "TextDataEncrypted")
+            .context("Apple omitted this note's text; no update was sent")?;
+        if !notes_body_attachment_ids(&encoded_body).is_empty() {
+            bail!(
+                "This note has inline attachments; plain-text update would remove them, so no update was sent"
+            );
+        }
+        if !notes_plain_text_body_compatible(&encoded_body)? {
+            bail!(
+                "This note contains rich text or a complex body; plain-text update could discard formatting, so no update was sent"
+            );
+        }
+        let old_text = decode_notes_body(encoded_body)
+            .context("Could not decode this note's text; no update was sent")?;
+        if !old_title.is_empty()
+            && old_text != old_title
+            && !old_text.starts_with(&format!("{old_title}\n"))
+        {
+            bail!(
+                "This note's title and text are not in the supported simple-text layout; no update was sent"
+            );
+        }
+        let old_body = notes_body_without_title(&old_text, &old_title);
+        let new_title = title.unwrap_or(&old_title).trim().to_owned();
+        let new_body = body.unwrap_or(&old_body).to_owned();
+        let (note_text, note_title, snippet) = notes_compose_text(&new_title, &new_body);
+        let replica = Uuid::new_v4().into_bytes();
+        let encoded = encode_new_note_body(&replica, &note_text)?;
+        let change_tag = record
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .context("Apple omitted the Notes change tag; no update was sent")?;
+        let mut updated_fields = json!({
+            "TextDataEncrypted":{"type":"ENCRYPTED_BYTES","value":STANDARD.encode(encoded)},
+            "TitleEncrypted":{"type":"ENCRYPTED_STRING","value":STANDARD.encode(note_title.as_bytes())},
+            "SnippetEncrypted":{"type":"ENCRYPTED_STRING","value":STANDARD.encode(snippet.as_bytes())},
+            "ModificationDate":{"type":"TIMESTAMP","value":Utc::now().timestamp_millis()}
+        });
+        if let Some(version) = fields.get("ReplicaIDToNotesVersionDataEncrypted") {
+            updated_fields["ReplicaIDToNotesVersionDataEncrypted"] = version.clone();
+        }
+        let response = self.notes_cloudkit_request(
+            "records/modify",
+            &json!({
+                "atomic":true,
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "operations":[{"operationType":"update","record":{
+                    "recordName":record_name,"recordType":"Note","recordChangeTag":change_tag,"fields":updated_fields
+                }}]
+            }),
+        )?;
+        let result = cloudkit_single_record(&response, "Apple Notes update")?;
+        if let Some(code) = result.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes update failed ({code}); inspect the note before retrying");
+        }
+        let verified = self.notes_get(&record_name, false)?;
+        if verified.get("title").and_then(Value::as_str) != Some(note_title.as_str())
+            || verified.get("text").and_then(Value::as_str) != Some(note_text.as_str())
+        {
+            bail!(
+                "Apple accepted the note update, but readback differs; inspect Notes before retrying"
+            );
+        }
+        Ok(
+            json!({"id":record_name,"title":note_title,"updated":true,"verified":true,"formatting_preserved":false}),
+        )
     }
 
     fn notes_attachment_metadata(&mut self, id: &str) -> Result<Vec<Value>> {
@@ -1901,6 +3838,91 @@ impl AppleConnection {
                 Some(json!({"id":id,"name":name,"count":count}))
             })
             .collect())
+    }
+
+    pub fn reminder_list_create(&mut self, name: &str) -> Result<Value> {
+        self.reminders_require_access("icli reminders lists")?;
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 256 || name.chars().any(char::is_control) {
+            bail!("List name must contain 1 to 256 printable characters");
+        }
+        let record_name = format!(
+            "List/{}",
+            Uuid::new_v4().simple().to_string().to_uppercase()
+        );
+        self.reminders_modify(vec![json!({
+            "operationType":"create",
+            "record":{"recordName":record_name,"recordType":"List","fields":{"Name":{"type":"STRING","value":name}}}
+        })], false)?;
+        let record = self.reminders_record(&record_name)?;
+        Ok(
+            json!({"id":record_name,"name":cloudkit_field_value(record.get("fields"),"Name").and_then(Value::as_str).unwrap_or(name),"created":true}),
+        )
+    }
+
+    pub fn reminder_list_update(&mut self, id: &str, name: &str) -> Result<Value> {
+        self.reminders_require_access("icli reminders lists")?;
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 256 || name.chars().any(char::is_control) {
+            bail!("List name must contain 1 to 256 printable characters");
+        }
+        let record_name = reminders_record_name(id, "List");
+        let record = self.reminders_record(&record_name)?;
+        if record.get("recordType").and_then(Value::as_str) != Some("List") {
+            bail!("The selected CloudKit record is not a Reminders list");
+        }
+        let change_tag = record
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .context("Apple omitted the list change tag; no update was sent")?;
+        self.reminders_modify(vec![json!({"operationType":"update","record":{"recordName":record_name,"recordType":"List","recordChangeTag":change_tag,"fields":{"Name":{"type":"STRING","value":name}}}})], false)?;
+        let updated = self.reminders_record(&record_name)?;
+        Ok(
+            json!({"id":record_name,"name":cloudkit_field_value(updated.get("fields"),"Name").and_then(Value::as_str).unwrap_or(name),"updated":true}),
+        )
+    }
+
+    pub fn reminder_list_delete(&mut self, id: &str) -> Result<Value> {
+        self.reminders_require_access("icli reminders lists")?;
+        let record_name = reminders_record_name(id, "List");
+        let list = self.reminders_record(&record_name)?;
+        if list.get("recordType").and_then(Value::as_str) != Some("List") {
+            bail!("The selected CloudKit record is not a Reminders list");
+        }
+        let mut query = json!({"query":{"recordType":"reminderList","filterBy":[
+            {"comparator":"EQUALS","fieldName":"List","fieldValue":{"type":"REFERENCE","value":{"recordName":record_name,"action":"VALIDATE"}}},
+            {"comparator":"EQUALS","fieldName":"includeCompleted","fieldValue":{"type":"INT64","value":1}},
+            {"comparator":"EQUALS","fieldName":"LookupValidatingReference","fieldValue":{"type":"INT64","value":1}}
+        ]},"zoneID":{"zoneName":"Reminders","zoneType":"REGULAR_CUSTOM_ZONE"},"resultsLimit":100});
+        loop {
+            let response = self.reminders_cloudkit_request("records/query", &query)?;
+            let records = response
+                .get("records")
+                .and_then(Value::as_array)
+                .context("Apple returned an invalid list-membership response")?;
+            for reminder in records {
+                if let Some(code) = reminder.get("serverErrorCode").and_then(Value::as_str) {
+                    bail!("Apple could not verify whether the Reminders list is empty ({code})");
+                }
+                if reminder.get("recordType").and_then(Value::as_str) == Some("Reminder")
+                    && !cloudkit_field_truthy(reminder.get("fields"), "Deleted")
+                {
+                    bail!(
+                        "This list still contains reminders; move or delete them before deleting the list"
+                    );
+                }
+            }
+            match response.get("continuationMarker").and_then(Value::as_str) {
+                Some(marker) if !marker.is_empty() => query["continuationMarker"] = json!(marker),
+                _ => break,
+            }
+        }
+        let change_tag = list
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .context("Apple omitted the list change tag; no delete was sent")?;
+        self.reminders_modify(vec![json!({"operationType":"delete","record":{"recordName":record_name,"recordType":"List","recordChangeTag":change_tag}})], false)?;
+        Ok(json!({"id":record_name,"deleted":true}))
     }
 
     /// Fetch one page of reminders from all current lists, including completed items.
@@ -2894,6 +4916,352 @@ fn notes_record_name(id: &str, prefix: &str) -> String {
         .to_owned()
 }
 
+fn cloudkit_single_record<'a>(response: &'a Value, operation: &str) -> Result<&'a Value> {
+    response
+        .get("records")
+        .and_then(Value::as_array)
+        .and_then(|records| records.first())
+        .with_context(|| format!("Apple returned an invalid {operation} response"))
+}
+
+fn invites_event_id(record: &Value) -> Option<String> {
+    let name = record.get("recordName")?.as_str()?;
+    Some(
+        name.strip_prefix("EventDetails:")
+            .unwrap_or(name)
+            .to_owned(),
+    )
+}
+
+fn invites_field<'a>(fields: Option<&'a Value>, name: &str) -> Option<&'a Value> {
+    fields?.get(name)?.get("value")
+}
+
+fn invites_short_guid(input: &str) -> Result<String> {
+    let short_guid = input.rsplit('/').next().unwrap_or(input).trim();
+    if short_guid.is_empty() || short_guid.chars().any(char::is_control) {
+        bail!("Provide an Apple Invites short link ID or icloud.com/invites URL");
+    }
+    Ok(short_guid.to_owned())
+}
+
+fn photos_safe_filename(filename: &str, id: &str) -> String {
+    let last_component = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
+    let clean = |value: &str| -> String {
+        let safe = value
+            .chars()
+            .map(|ch| {
+                if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        safe.trim_matches(['.', ' ']).chars().take(80).collect()
+    };
+    let safe_id = clean(id);
+    let (stem, extension) = last_component
+        .rsplit_once('.')
+        .filter(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
+        .unwrap_or((last_component, ""));
+    let stem = clean(stem);
+    let extension = clean(extension);
+    let stem = if stem.is_empty() { "photo" } else { &stem };
+    if extension.is_empty() {
+        format!("{stem}__{safe_id}")
+    } else {
+        format!("{stem}__{safe_id}.{extension}")
+    }
+}
+
+fn shared_album_token(input: &str) -> Result<String> {
+    let input = input.trim();
+    let token = if let Ok(url) = Url::parse(input) {
+        if url.scheme() != "https"
+            || !url
+                .host_str()
+                .is_some_and(|host| host == "icloud.com" || host.ends_with(".icloud.com"))
+        {
+            bail!("Provide an HTTPS iCloud Shared Album URL or its album token");
+        }
+        url.fragment()
+            .context("Shared Album URL has no album token in its fragment")?
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        input
+            .trim_start_matches('#')
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    if !(6..=128).contains(&token.len()) || !token.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        bail!("Provide a valid Apple Shared Album URL or token");
+    }
+    Ok(token)
+}
+
+fn shared_album_partition(token: &str) -> Result<String> {
+    let bytes = token.as_bytes();
+    let encoded = if bytes.first() == Some(&b'A') {
+        bytes.get(1..2)
+    } else {
+        bytes.get(1..3)
+    }
+    .context("Shared Album token is too short to determine its service host")?;
+    let mut partition = 0u32;
+    for byte in encoded {
+        let digit = match *byte {
+            b'0'..=b'9' => u32::from(*byte - b'0'),
+            b'A'..=b'Z' => u32::from(*byte - b'A') + 10,
+            b'a'..=b'z' => u32::from(*byte - b'a') + 36,
+            _ => bail!("Shared Album token contains an invalid host partition"),
+        };
+        partition = partition * 62 + digit;
+    }
+    Ok(format!("{partition:02}"))
+}
+
+fn invites_text(fields: Option<&Value>, name: &str) -> Value {
+    let Some(field) = fields.and_then(|fields| fields.get(name)) else {
+        return Value::Null;
+    };
+    let Some(value) = field.get("value") else {
+        return Value::Null;
+    };
+    if matches!(
+        field.get("type").and_then(Value::as_str),
+        Some("ENCRYPTED_STRING" | "BYTES" | "ENCRYPTED_BYTES")
+    ) {
+        if let Some(text) = value.as_str() {
+            if let Ok(bytes) = STANDARD.decode(text) {
+                if let Ok(decoded) = String::from_utf8(bytes) {
+                    return json!(decoded);
+                }
+            }
+        }
+    }
+    if let Some(bytes) = value.as_array().and_then(|items| {
+        items
+            .iter()
+            .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()))
+            .collect::<Option<Vec<_>>>()
+    }) {
+        return String::from_utf8(bytes)
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+    }
+    value.clone()
+}
+
+fn invites_json_value(fields: Option<&Value>, name: &str) -> Value {
+    let Some(value) = invites_field(fields, name) else {
+        return Value::Null;
+    };
+    if value.is_object() || value.is_array() {
+        return value.clone();
+    }
+    let Some(encoded) = value.as_str() else {
+        return Value::Null;
+    };
+    if let Ok(parsed) = serde_json::from_str::<Value>(encoded) {
+        return parsed;
+    }
+    let mut padded = encoded.to_owned();
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    STANDARD
+        .decode(padded)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn invites_bool(fields: Option<&Value>, name: &str) -> bool {
+    match invites_field(fields, name) {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(value)) => value.as_i64().unwrap_or_default() != 0,
+        _ => false,
+    }
+}
+
+fn invites_event_summary(record: &Value, id: &str, scope: &str, zone: Option<&Value>) -> Value {
+    let fields = record.get("fields");
+    let time = invites_json_value(fields, "time");
+    let start = time
+        .get("startSince1970")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .map(|date| date.to_rfc3339());
+    let end = time
+        .get("endSince1970")
+        .and_then(Value::as_i64)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .map(|date| date.to_rfc3339());
+    json!({
+        "id":id,"scope":scope,"title":invites_text(fields,"title"),"notes":invites_text(fields,"notes"),
+        "host":invites_text(fields,"hostDisplayName"),"start":start,"end":end,
+        "all_day":time.get("isAllDay").and_then(Value::as_bool).unwrap_or(false),"time":time,
+        "place":invites_json_value(fields,"place"),"published":invites_bool(fields,"isPublished"),
+        "cancelled":invites_bool(fields,"isCancelled"),"is_private":invites_bool(fields,"isPrivate"),
+        "record_change_tag":record.get("recordChangeTag"),
+        "zone_id":zone.cloned().unwrap_or_else(||json!({"zoneName":id,"zoneType":"REGULAR_CUSTOM_ZONE"}))
+    })
+}
+
+fn invites_share_summary(record: &Value) -> Value {
+    let fields = record.get("fields");
+    let participants = record
+        .get("participants")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    json!({
+        "short_guid":record.get("shortGUID").or_else(||invites_field(fields,"shortGUID")),
+        "stable_url":record.get("stableUrl").or_else(||invites_field(fields,"stableUrl")),
+        "public_permission":record.get("publicPermission").or_else(||invites_field(fields,"publicPermission")),
+        "participants":participants,"current_user_participant":record.get("currentUserParticipant")
+    })
+}
+
+fn invites_rsvp_summary(record: &Value) -> Value {
+    let fields = record.get("fields");
+    json!({
+        "id":record.get("recordName"),"status":invites_field(fields,"status"),
+        "name":invites_text(fields,"name"),"message":invites_text(fields,"message"),
+        "additional_adults":invites_field(fields,"numAdditionalAdults"),
+        "additional_kids":invites_field(fields,"numAdditionalKids"),
+        "additional_guests":invites_field(fields,"numAdditionalGuests"),
+        "modified":record.get("modified"),"record_change_tag":record.get("recordChangeTag")
+    })
+}
+
+fn notes_compose_text(title: &str, body: &str) -> (String, String, String) {
+    let title = title.trim().to_owned();
+    let text = match (title.is_empty(), body.is_empty()) {
+        (false, false) => format!("{title}\n{body}"),
+        (false, true) => title.clone(),
+        (true, _) => body.to_owned(),
+    };
+    (text, title, body.chars().take(120).collect())
+}
+
+fn notes_body_without_title(text: &str, title: &str) -> String {
+    if title.is_empty() {
+        return text.to_owned();
+    }
+    text.strip_prefix(title)
+        .and_then(|rest| rest.strip_prefix('\n'))
+        .unwrap_or(text)
+        .to_owned()
+}
+
+fn notes_plain_text_body_compatible(encoded: &[u8]) -> Result<bool> {
+    let document = decompress_crdt_document(encoded);
+    let root = protobuf_parse_message(&document)?;
+    let Some(version) = protobuf_field_bytes(&root, 2) else {
+        return Ok(false);
+    };
+    let version = protobuf_parse_message(version)?;
+    let Some(topotext) = protobuf_field_bytes(&version, 3) else {
+        return Ok(false);
+    };
+    let topotext = protobuf_parse_message(topotext)?;
+    let runs = topotext
+        .iter()
+        .filter(|field| field.number == 5 && field.wire == 2)
+        .collect::<Vec<_>>();
+    if runs.len() > 1 {
+        return Ok(false);
+    }
+    for run in runs {
+        let fields = protobuf_parse_message(&run.value)?;
+        if fields.len() != 1 || fields[0].number != 1 || fields[0].wire != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Encode the minimal compressed topotext document used by plain text notes.
+/// Field numbering follows the observed `versioned_document.Document` and
+/// `topotext.String` wire schemas; Notes/CloudKit performs field encryption.
+fn encode_new_note_body(replica_id: &[u8; 16], text: &str) -> Result<Vec<u8>> {
+    fn varint(mut value: u64, out: &mut Vec<u8>) {
+        while value >= 0x80 {
+            out.push((value as u8) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+    fn varint_field(field: u64, value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        varint((field << 3) | 0, &mut out);
+        varint(value, &mut out);
+        out
+    }
+    fn bytes_field(field: u64, value: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(value.len() + 8);
+        varint((field << 3) | 2, &mut out);
+        varint(value.len() as u64, &mut out);
+        out.extend_from_slice(value);
+        out
+    }
+    fn char_id(replica: u64, clock: u64) -> Vec<u8> {
+        [varint_field(1, replica), varint_field(2, clock)].concat()
+    }
+    fn substring(
+        replica: u64,
+        clock: u64,
+        length: u64,
+        timestamp_replica: u64,
+        timestamp_clock: u64,
+        child: Option<u64>,
+    ) -> Vec<u8> {
+        let mut inner = bytes_field(1, &char_id(replica, clock));
+        inner.extend(varint_field(2, length));
+        inner.extend(bytes_field(3, &char_id(timestamp_replica, timestamp_clock)));
+        if let Some(child) = child {
+            inner.extend(varint_field(5, child));
+        }
+        bytes_field(3, &inner)
+    }
+
+    let utf16_len = text.encode_utf16().count() as u64;
+    let mut topotext = bytes_field(2, text.as_bytes());
+    topotext.extend(substring(0, 0, 0, 0, 0, Some(1)));
+    if utf16_len > 0 {
+        topotext.extend(substring(1, 0, utf16_len, 1, 0, Some(2)));
+    }
+    topotext.extend(substring(0, u32::MAX as u64, 0, 0, u32::MAX as u64, None));
+
+    let replica_clock = varint_field(1, utf16_len);
+    let timestamp_clock = varint_field(1, u64::from(utf16_len > 0));
+    let mut clock = bytes_field(1, replica_id);
+    clock.extend(bytes_field(2, &replica_clock));
+    clock.extend(bytes_field(2, &timestamp_clock));
+    topotext.extend(bytes_field(4, &bytes_field(1, &clock)));
+    if utf16_len > 0 {
+        topotext.extend(bytes_field(5, &varint_field(1, utf16_len)));
+    }
+
+    let mut version = varint_field(2, 0);
+    version.extend(bytes_field(3, &topotext));
+    let document = bytes_field(2, &version);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&document)
+        .context("Could not compress the Apple Notes body")?;
+    encoder
+        .finish()
+        .context("Could not finish compressing the Apple Notes body")
+}
+
 fn notes_reference(fields: Option<&Value>, name: &str) -> Option<String> {
     fields?
         .get(name)?
@@ -2931,10 +5299,16 @@ fn notes_field_text(fields: Option<&Value>, name: &str) -> Value {
     let Some(value) = field.get("value") else {
         return Value::Null;
     };
-    let is_bytes = matches!(
-        field.get("type").and_then(Value::as_str),
-        Some("ENCRYPTED_BYTES" | "BYTES")
-    );
+    let field_type = field.get("type").and_then(Value::as_str);
+    if field_type == Some("ENCRYPTED_STRING") {
+        return value
+            .as_str()
+            .and_then(|text| STANDARD.decode(text).ok())
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(Value::String)
+            .unwrap_or_else(|| value.clone());
+    }
+    let is_bytes = matches!(field_type, Some("ENCRYPTED_BYTES" | "BYTES"));
     if !is_bytes {
         return value.clone();
     }

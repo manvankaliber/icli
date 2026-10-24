@@ -24,10 +24,14 @@ fn enrich(mut command: Command, path: String) -> Command {
             "calendar" | "calendar_pos" => "Calendar name, stable ID, full href, or href path from calendar list; ambiguous matches fail with candidates",
             "id" if path.starts_with("icli reminders") => "Stable reminder ID from `icli reminders list` or `icli reminders get`",
             "id" if path.starts_with("icli notes") => "Stable note ID from `icli notes recent`, `icli notes list`, or `icli notes search`",
+            "id" if path.starts_with("icli find-my") => "Find My device ID from `icli find-my list`",
+            "id" if path.starts_with("icli invites") => "Apple Invites event ID from `icli invites list`",
+            "id" if path.starts_with("icli photos") => "Photo asset ID from `icli photos list`",
             "hashtag_id" => "Stable hashtag ID from `icli reminders hashtag list`",
             "attachment_id" => "Stable attachment ID from `icli reminders attachment list`",
             "rule_id" => "Stable recurrence rule ID from `icli reminders recurrence list`",
             "uid" => "Resource UID from this service's list command; contacts/events also accept an exact resource href from ambiguity errors; mail UIDs are scoped to --folder (INBOX by default)",
+            "folder" if path == "icli notes create" => "Destination folder ID from `icli notes folders`; defaults to Notes",
             "folder" => "IMAP folder name; defaults to INBOX",
             "source" => "Source IMAP folder for a move; defaults to INBOX",
             "destination" => "Destination IMAP folder for a move",
@@ -35,14 +39,41 @@ fn enrich(mut command: Command, path: String) -> Command {
             "query" if path == "icli calendar events search" => "Literal text to match with CalDAV's case-insensitive ASCII collation",
             "query" if path == "icli contacts search" => "Literal text to match as a Unicode-aware case-insensitive substring",
             "query" if path == "icli notes search" => "Case-insensitive title substring; --all searches the full Notes zone",
+            "name" if path.starts_with("icli invites rsvp") => "Display name to attach to your RSVP",
             "query" => "Literal text to match as a case-insensitive substring in the selected fields",
             "fields" if path == "icli calendar events search" => "Event fields to search: summary, description, location, attendee, organizer, or categories; repeat or comma-separate",
             "fields" if path == "icli contacts search" => "Contact fields to search: name, email, phone, or organization; repeat or comma-separate",
             "fields" => "Properties searched for the query; repeat or comma-separate field names",
             "part" => "MIME part ID reported by mail get, such as 1.2",
             "output" if path == "icli notes export" => "Local file path for the requested text, Markdown, or HTML export",
+            "output" if path.starts_with("icli find-my export") => "New JSON snapshot file; existing files are never overwritten",
+            "url" if path.starts_with("icli photos shared-album") => "HTTPS iCloud Shared Album URL, or its token",
+            "yes" if path.starts_with("icli find-my erase") => "Confirm requesting an irreversible remote erase",
+            "yes" if path.starts_with("icli auth logout") => "Confirm asking Apple to log out all browser sessions",
+            "all_sessions" => "Ask Apple to log out all browser sessions; requires --yes",
+            "keep_trusted" => "Ask Apple to preserve this browser's trusted status after logout",
+            "output" if path.starts_with("icli photos download") => "New local file path; existing files are never overwritten",
+            "message" if path.starts_with("icli invites rsvp") => "Optional message attached to your RSVP",
+            "message" if path.starts_with("icli find-my") => "Message to display on the device",
+            "body" if path.starts_with("icli notes update") => "Replacement plain-text note body; replacing text discards rich formatting",
+            "body" if path.starts_with("icli notes create") => "Plain-text body for the new note",
+            "title" if path.starts_with("icli notes") => "Plain-text note title; updating also rebuilds the body document",
             "output_dir" => "Directory for downloaded Notes attachments; existing files are never overwritten",
             "export_format" => "Export representation: text, markdown, or html; HTML/Markdown also download attachments unless --no-assets is set",
+            "album" if path.starts_with("icli photos") => "Custom album name or supported smart album such as Favorites, Screenshots, or Videos",
+            "directory" if path.starts_with("icli photos") => "Local folder for Photos downloads; new files are written without overwriting existing files",
+            "size" if path.starts_with("icli photos download") => "Asset size to download: original, medium, or thumbnail",
+            "interval" if path.starts_with("icli photos watch") => "Seconds between sync passes; allowed range is 60 to 86400",
+            "short_guid" => "Short code from an Apple Invites URL, or the full iCloud invite URL",
+            "status" if path.starts_with("icli invites rsvp") => "RSVP response: no-response, not-going, maybe, or going",
+            "text" if path.starts_with("icli find-my message") => "Message to display on the device",
+            "subject" if path.starts_with("icli find-my") => "Notification title shown on the device",
+            "phone" if path.starts_with("icli find-my lost-mode") => "Optional contact number shown in Lost Mode",
+            "yes" if path.starts_with("icli find-my lost-mode") => "Confirm enabling Lost Mode on this device",
+            "locate" if path.starts_with("icli find-my") => "Ask Apple for fresh device locations; without this flag iCLI returns its current device snapshot",
+            "sound" if path.starts_with("icli find-my message") => "Also play a sound when showing this message",
+            "additional_adults" => "Number of additional adults in your RSVP; non-going responses always store zero",
+            "additional_kids" => "Number of additional children in your RSVP; non-going responses always store zero",
             "output" => "Local path to write the decoded attachment bytes",
             "rrule" => "iCalendar recurrence rule such as FREQ=WEEKLY;BYDAY=MO",
             "alarm_minutes" => "Display alarm minutes before start; repeat to set multiple alarms",
@@ -58,16 +89,22 @@ fn enrich(mut command: Command, path: String) -> Command {
             "limit" if path == "icli reminders list" => "Maximum reminders returned after --skip; 0 returns none",
             "limit" if path == "icli reminders snapshot" => "Maximum rows per record type; truncated_types identifies capped arrays",
             "limit" if path == "icli reminders changes" => "Maximum changed reminder records returned in this sync page",
+            "limit" if path.starts_with("icli photos changes") => "Maximum number of photo changes to return (1 to 1000)",
+            "limit" if path.starts_with("icli photos shared-album-download") => "Maximum shared album assets to download (1 to 1000)",
+            "limit" if path.starts_with("icli photos shared-album") => "Maximum shared album photos to return (1 to 1000)",
             "limit" if path.starts_with("icli notes") => "Maximum note results after --skip; 0 returns none",
+            "limit" if path.starts_with("icli photos") => "Maximum photos returned after --skip; 1 to 100",
             "limit" => "Maximum message UIDs fetched after --skip, newest IMAP UIDs first; 0 returns none",
             "skip" if path.starts_with("icli mail") => "Matching message UIDs to skip, newest first, before fetching headers; zero-based offset",
             "skip" if path == "icli calendar events search" => "Matching events to skip in resource href order; DAV downloads all matches, so use one sufficiently large --limit when possible",
             "skip" if path.starts_with("icli contacts") => "Matching contacts to skip in ascending UID order; DAV downloads skipped matches, so use one sufficiently large --limit when possible",
             "skip" if path == "icli reminders list" => "Matching reminders to skip before applying --limit; CloudKit still reads skipped rows to reach this offset",
             "skip" if path.starts_with("icli notes") => "Matching Notes to skip before applying --limit",
+            "skip" if path.starts_with("icli photos") => "Photos to skip in the selected album before applying --limit",
             "folder_id" => "Stable folder ID from `icli notes folders`",
             "all" if path == "icli notes search" => "Search all Notes instead of only the recent-notes feed",
             "all" => "Read the full Notes zone instead of the recent-notes feed",
+            "since" if path.starts_with("icli photos") => "Opaque Photos sync cursor from `icli photos sync-cursor` or a prior changes response",
             "since" if path.starts_with("icli notes") => "Opaque Notes sync cursor from `icli notes sync-cursor` or a prior response",
             "with_attachments" => "Include linked attachment metadata without downloading file contents",
             "skip" => "Matching results to skip before applying --limit; zero-based offset",
@@ -256,6 +293,9 @@ fn enrich(mut command: Command, path: String) -> Command {
         "icli auth remove" => Some(
             "Remove the local account, app-specific password, pending Apple challenge, and trusted session including its credential chunks. Remote Apple data is unaffected. Removing the default selects the sole remaining account; with several remaining accounts the default is cleared and exact selection commands are returned.",
         ),
+        "icli auth logout" => Some(
+            "Ask Apple to log out the selected web session, then clear the saved Apple session locally. The app-specific password, account configuration, and default account are retained. Remote logout confirmation is reported separately from local clearing. --keep-trusted asks Apple to retain trusted-browser state for a later sign-in. --all-sessions asks Apple to sign out all browser sessions and requires --yes; other browser sessions may be affected.",
+        ),
         "icli contacts list" | "icli contacts get" => Some(
             "Read contact summaries containing uid, name, emails, phones, and birthday. Use --include PROPERTY, repeat it, or comma-separate property names to add values under properties. Names are case-insensitive. --include all returns every property, including Apple X- fields, custom fields, repeated values, and parameters. Grouped Apple properties retain their full names; requesting ADR also selects grouped names such as ITEM1.ADR. Requested properties absent from the result are reported. List reads the address book, sorts contacts by UID, and applies --skip before --limit. These commands do not modify cards.",
         ),
@@ -361,6 +401,9 @@ fn enrich(mut command: Command, path: String) -> Command {
         }
         "icli auth resend" => "icli auth resend person@icloud.com --method sms",
         "icli auth refresh" => "icli auth refresh\nicli auth refresh --email person@icloud.com",
+        "icli auth logout" => {
+            "icli auth logout\nicli auth logout --keep-trusted\nicli auth logout --all-sessions --yes"
+        }
         "icli auth check" => {
             "icli auth check\nicli auth check --email person@icloud.com --app-password"
         }
@@ -536,6 +579,9 @@ fn enrich(mut command: Command, path: String) -> Command {
         }
         "icli auth list" => "array of {email, default}; passwords are never returned",
         "icli auth remove" => "object: email, removed=true, default_user, accounts=[{email}]",
+        "icli auth logout" => {
+            "object: email, remote_logout_confirmed, remote_http_status?, local_session_cleared=true, keep_trusted, all_sessions"
+        }
         "icli auth check" => {
             "default: object describing the valid Apple session. With --app-password: array of {service, status, authenticated, error?} for mail/calendar/contacts"
         }

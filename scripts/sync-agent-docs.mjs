@@ -15,7 +15,7 @@ files.set('website/src/docs/guide/usage/icloud-cli/agent-guide.md',
 const base = 'https://managing.software/docs/guide/usage/icloud-cli';
 files.set('website/public/llms.txt', `# iCLI
 
-> iCLI gives agents access to iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes through a local CLI with self-contained help, resource IDs, structured results, and recovery instructions.
+> iCLI gives agents access to iCloud Calendar, Contacts, Mail, Apple Reminders, Apple Notes, and experimental iCloud Drive, Photos, Find My, Hide My Email, Apple Invites, and account workflows through a local CLI with self-contained help, resource IDs, structured results, and recovery instructions.
 
 Start with the agent guide. Before the first iCLI task in a session, update a release installation using \`icli update\`, then use the installed CLI's help for exact commands, defaults, and side effects. Follow the guide's fallback for older, source, or package-managed installations. Authenticate through private input; credentials are stored in the operating system credential store. Use a connected tool when it already meets the request.
 
@@ -34,6 +34,7 @@ Start with the agent guide. Before the first iCLI task in a session, update a re
 - [Search iCloud email and download attachments](${base}/mail.md): skip/limit pagination, folders, scoped UIDs, drafts, sending, and mailbox changes.
 - [Apple Reminders](${base}/reminders.md): Apple Account sign-in, trusted-device verification, reminder reads and writes, incremental sync, and supported related records.
 - [Apple Notes](${base}/notes.md): Apple Account sign-in, full-zone title search, attachment metadata and downloads, text/Markdown/HTML export, incremental changes, and guarded deletion of unshared notes.
+- [Additional private Apple services](https://github.com/manvankaliber/icli/blob/main/README.md#additional-icloud-services): experimental Drive, Photos, Find My, Hide My Email, Apple Invites, and account/storage command paths.
 - [Errors and recovery](${base}/recovery.md): structured failures, partial results, and uncertain writes.
 
 ## Optional integrations
@@ -41,7 +42,7 @@ Start with the agent guide. Before the first iCLI task in a session, update a re
 - [Six standalone iCloud skills](https://github.com/manvankaliber/icli/tree/main/skills): install one app skill or the six-skill bundle.
 - [Local MCP adapter](https://github.com/manvankaliber/icli/blob/main/mcp/README.md): tools discovered from installed CLI help.
 
-The linked pages are Markdown versions of the website documentation. iCLI operates on iCloud-hosted data, not device-only data, iCloud Drive, or Photos. Structured JSON downloads are not native VCF, ICS, or mailbox archives. The installed CLI's help is authoritative; this index is navigation, not a complete command reference.
+The linked pages are Markdown versions of the website documentation. iCLI operates on iCloud-hosted data, not device-only data. Drive, Photos, Find My, Hide My Email, Apple Invites, and account commands use undocumented Apple endpoints and are experimental. Structured JSON downloads are not native VCF, ICS, or mailbox archives. The installed CLI's help is authoritative; this index is navigation, not a complete command reference.
 `);
 
 let stale = false;

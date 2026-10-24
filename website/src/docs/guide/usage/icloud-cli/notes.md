@@ -1,6 +1,6 @@
 ---
 title: Apple Notes
-description: Browse and search iCloud Notes, download attachments, export text/Markdown/HTML, and resume incremental changes with iCLI.
+description: Browse, search, create simple text notes, update plain-text notes, download attachments, export text/Markdown/HTML, and resume incremental changes with iCLI.
 ---
 
 # Apple Notes
@@ -12,8 +12,9 @@ granting access to encrypted Notes data. Follow the command's `next_steps`,
 approve on a trusted device, and retry the Notes command.
 
 The Notes command group can browse folders and notes, search recent or all note
-titles, read decoded plain text and attachment metadata, download linked files,
-export text/Markdown/HTML, read incremental changes, and soft-delete notes.
+titles or body text, create simple text notes, update supported plain-text notes,
+read decoded text and attachment metadata, download linked files, export
+text/Markdown/HTML, read incremental changes, and soft-delete notes.
 Delete commands require `--yes`, check share metadata before each write, and
 verify the Deleted flag by reading the note back. The bulk command leaves
 shared notes unchanged. HTML and Markdown exports preserve decoded text and
@@ -30,13 +31,15 @@ icli notes list --all --skip 0 --limit 100
 icli notes list --folder-id FOLDER_ID
 icli notes search "project plan" --limit 20
 icli notes search "project plan" --all --limit 20
+icli notes search "train" --all --content --limit 20
 ```
 
 `recent` and the default `list` read Apple's recents index. `list --all` reads
 the complete Notes zone, which may be slower. Use `--folder-id` with the recent
 feed to narrow results to a folder. Search matches a case-insensitive substring
 of note titles; by default it searches recent notes, and `search QUERY --all`
-scans the complete Notes zone. Search does not inspect note bodies. List and
+scans the complete Notes zone. Add `--content` with `--all` to inspect decoded
+note body text as well. List and
 search commands default to 100 rows and return pagination guidance where
 available. Keep the account and query scope unchanged when following `--skip`
 offsets.
@@ -67,7 +70,22 @@ markdown|html` for those formats. Markdown and HTML exports download available
 attachments to a sibling `<output-name>_assets` folder by default and link them
 from the output. `--no-assets` skips downloads. HTML/Markdown preserve the text
 and available attachments, but do not reconstruct every rich Notes style.
-Review the destination because the export file itself may be replaced.
+Exports do not overwrite existing files; choose a new destination if the path
+already exists.
+
+## Create or update simple text notes
+
+```sh
+icli notes create --title "Trip plan" --body "Check train times and hotel options."
+icli notes update NOTE_ID --title "Updated title" --body "Revised plain-text body"
+```
+
+Creation writes a basic text note to Notes by default; use `--folder FOLDER_ID`
+to select a folder. Update replaces the note's text document and cannot preserve
+rich formatting, so the command refuses notes with rich text, attachments,
+sharing, or deletion state. Omit one field to leave its current value in place.
+These write paths use Apple's private CloudKit interface and have not been
+verified against a live account in this release.
 
 ## Delete unshared notes
 
