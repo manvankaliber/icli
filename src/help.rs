@@ -11,6 +11,7 @@ fn enrich(mut command: Command, path: String) -> Command {
             "json" => "Force JSON, overriding --format and the saved format",
             "format" => "Response format for this invocation; overrides saved config unless --json is present",
             "email" if path.starts_with("icli reminders") => "Apple Account email; defaults to the saved default account, then the sole configured account",
+            "email" if path.starts_with("icli notes") => "Apple Account email; defaults to the saved default account, then the sole configured account",
             "email" | "email_flag" | "email_pos" => "Configured account email; otherwise use the default account, then the sole saved account; multiple accounts require a choice",
             "password" | "password_flag" if path == "icli auth add" => "Apple Account password used only for sign-in; prefer --password-stdin over arguments",
             "password" | "password_flag" => "Apple app-specific password; arguments may be exposed in shell history/process listings; prefer --password-stdin",
@@ -22,6 +23,7 @@ fn enrich(mut command: Command, path: String) -> Command {
             "response_format" => "Save agent, csv, or json as the default; this response uses the new format unless explicitly overridden",
             "calendar" | "calendar_pos" => "Calendar name, stable ID, full href, or href path from calendar list; ambiguous matches fail with candidates",
             "id" if path.starts_with("icli reminders") => "Stable reminder ID from `icli reminders list` or `icli reminders get`",
+            "id" if path.starts_with("icli notes") => "Stable note ID from `icli notes recent`, `icli notes list`, or `icli notes search`",
             "hashtag_id" => "Stable hashtag ID from `icli reminders hashtag list`",
             "attachment_id" => "Stable attachment ID from `icli reminders attachment list`",
             "rule_id" => "Stable recurrence rule ID from `icli reminders recurrence list`",
@@ -32,11 +34,15 @@ fn enrich(mut command: Command, path: String) -> Command {
             "query" if path == "icli mail search" => "Text to find in the selected folder; IMAP searches message text",
             "query" if path == "icli calendar events search" => "Literal text to match with CalDAV's case-insensitive ASCII collation",
             "query" if path == "icli contacts search" => "Literal text to match as a Unicode-aware case-insensitive substring",
+            "query" if path == "icli notes search" => "Case-insensitive title substring; --all searches the full Notes zone",
             "query" => "Literal text to match as a case-insensitive substring in the selected fields",
             "fields" if path == "icli calendar events search" => "Event fields to search: summary, description, location, attendee, organizer, or categories; repeat or comma-separate",
             "fields" if path == "icli contacts search" => "Contact fields to search: name, email, phone, or organization; repeat or comma-separate",
             "fields" => "Properties searched for the query; repeat or comma-separate field names",
             "part" => "MIME part ID reported by mail get, such as 1.2",
+            "output" if path == "icli notes export" => "Local file path for the requested text, Markdown, or HTML export",
+            "output_dir" => "Directory for downloaded Notes attachments; existing files are never overwritten",
+            "export_format" => "Export representation: text, markdown, or html; HTML/Markdown also download attachments unless --no-assets is set",
             "output" => "Local path to write the decoded attachment bytes",
             "rrule" => "iCalendar recurrence rule such as FREQ=WEEKLY;BYDAY=MO",
             "alarm_minutes" => "Display alarm minutes before start; repeat to set multiple alarms",
@@ -52,11 +58,18 @@ fn enrich(mut command: Command, path: String) -> Command {
             "limit" if path == "icli reminders list" => "Maximum reminders returned after --skip; 0 returns none",
             "limit" if path == "icli reminders snapshot" => "Maximum rows per record type; truncated_types identifies capped arrays",
             "limit" if path == "icli reminders changes" => "Maximum changed reminder records returned in this sync page",
+            "limit" if path.starts_with("icli notes") => "Maximum note results after --skip; 0 returns none",
             "limit" => "Maximum message UIDs fetched after --skip, newest IMAP UIDs first; 0 returns none",
             "skip" if path.starts_with("icli mail") => "Matching message UIDs to skip, newest first, before fetching headers; zero-based offset",
             "skip" if path == "icli calendar events search" => "Matching events to skip in resource href order; DAV downloads all matches, so use one sufficiently large --limit when possible",
             "skip" if path.starts_with("icli contacts") => "Matching contacts to skip in ascending UID order; DAV downloads skipped matches, so use one sufficiently large --limit when possible",
             "skip" if path == "icli reminders list" => "Matching reminders to skip before applying --limit; CloudKit still reads skipped rows to reach this offset",
+            "skip" if path.starts_with("icli notes") => "Matching Notes to skip before applying --limit",
+            "folder_id" => "Stable folder ID from `icli notes folders`",
+            "all" if path == "icli notes search" => "Search all Notes instead of only the recent-notes feed",
+            "all" => "Read the full Notes zone instead of the recent-notes feed",
+            "since" if path.starts_with("icli notes") => "Opaque Notes sync cursor from `icli notes sync-cursor` or a prior response",
+            "with_attachments" => "Include linked attachment metadata without downloading file contents",
             "skip" => "Matching results to skip before applying --limit; zero-based offset",
             "concurrency" => "Maximum concurrent calendar requests, from 1 to 8; defaults to 2",
             "from" | "from_pos" => "First date, YYYY-MM-DD, inclusive at 00:00 UTC",
@@ -108,6 +121,9 @@ fn enrich(mut command: Command, path: String) -> Command {
         arg.help(description)
     });
     let override_about = match path.as_str() {
+        "icli version" => Some(
+            "Show the installed iCLI version, executable installation timestamp, and last successful update check. If the installation is older than three months and no successful check ran in the last two weeks, the output recommends `icli update --check` or `icli update`.",
+        ),
         "icli auth" => Some(
             "Start Apple Account sign-in with auth add and submit the code separately with auth verify. Trusted tokens and pending challenges are saved in the OS credential store; the Apple Account password is never saved. Commands reuse the default account and session. auth check checks the session, auth refresh renews saved tokens, and auth resend requests a new code. Mail, Calendar, and Contacts currently require a recommended app-specific password: save it with auth app-password and check it with auth check --app-password. auth add no longer saves app-specific passwords; migrate old scripts to auth app-password. auth apple-login is a deprecated alias for auth add.",
         ),
@@ -131,6 +147,45 @@ fn enrich(mut command: Command, path: String) -> Command {
         ),
         "icli reminders" => Some(
             "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The saved default account and trusted session are reused. The first read may request trusted-device approval for encrypted Reminders data. Inspect stable list and reminder IDs before writing. Deletes require --yes.",
+        ),
+        "icli notes" => Some(
+            "Read Apple Notes through the private CloudKit service using the saved Apple Account session. Search recent titles or add --all to search the complete Notes zone. Read attachment metadata with get --with-attachments, download files with notes download, and export text, Markdown, or HTML. Markdown and HTML exports download linked assets by default; --no-assets skips them. Delete commands require --yes, soft-delete records, verify readback, and check CloudKit share metadata.",
+        ),
+        "icli notes folders" => {
+            Some("List Notes folders and parent folder IDs. This read does not change data.")
+        }
+        "icli notes recent" => Some(
+            "List Notes from Apple's recents index, newest first. Use --skip and --limit to page through the current feed.",
+        ),
+        "icli notes list" => Some(
+            "List recent Notes by default. Add --all to enumerate the Notes CloudKit zone, or --folder-id to filter the recent feed. --since is accepted with --all to read changes from an opaque sync cursor. This command only reads Notes.",
+        ),
+        "icli notes search" => Some(
+            "Search recent Notes by case-insensitive title substring. Add --all to search the full Notes CloudKit zone; full-zone title search may take longer and returns ordinary skip/limit pagination.",
+        ),
+        "icli notes get" => Some(
+            "Read one note's summary and decoded plain-text body. Password-protected notes and unsupported body encodings may not yield text. --with-attachments resolves linked attachment filenames, types, sizes, and whether Apple supplied a download asset; it does not download file contents.",
+        ),
+        "icli notes render" => Some(
+            "Return a minimal HTML fragment containing the note title and decoded plain text. This does not reproduce Apple Notes rich formatting or download attachments.",
+        ),
+        "icli notes export" => Some(
+            "Write one note as UTF-8 text (default), Markdown, or HTML using --export-format. Markdown and HTML exports download available attachments into a sibling _assets directory and link them in the export; --no-assets skips those downloads. HTML is a readable rendering of decoded note text and attachment links, not a full reconstruction of every Apple Notes style. This does not modify iCloud.",
+        ),
+        "icli notes download" => Some(
+            "Download available files attached to one note into --output-dir. Files are saved with safe filenames and existing files are not overwritten. Each attachment reports downloaded or failed; this only reads iCloud and writes to the local directory.",
+        ),
+        "icli notes delete" => Some(
+            "Soft-delete one note in iCloud Notes. Requires --yes, rejects shared notes, uses the current CloudKit change tag, and verifies the Deleted flag after the write.",
+        ),
+        "icli notes delete-unshared" => Some(
+            "Soft-delete every active Note and PasswordProtectedNote without CloudKit share metadata. Shared notes are skipped. Requires --yes; returns per-note results and reports partial success if any write fails.",
+        ),
+        "icli notes changes" => Some(
+            "Read note updates and deletions from Apple's Notes zone. Save the returned cursor and pass it with --since to resume from that point.",
+        ),
+        "icli notes sync-cursor" => Some(
+            "Read Apple's opaque current Notes zone cursor. Do not edit or interpret the cursor.",
         ),
         "icli reminders lists" => Some(
             "Read reminder lists and their stable service IDs from Apple's CloudKit Reminders service, falling back to the legacy endpoint when CloudKit is not advertised. The first read may request trusted-device approval for encrypted Reminders data. This command does not change reminder data.",
@@ -288,6 +343,7 @@ fn enrich(mut command: Command, path: String) -> Command {
         command = command.long_about(about);
     }
     let example = match path.as_str() {
+        "icli version" => "icli version\nicli --version\nicli version --json",
         "icli update" => "icli update\nicli update --check --json",
         "icli config default-user" => "icli config default-user person@icloud.com",
         "icli config format" => "icli config format json\nicli --format agent config format json",
@@ -328,6 +384,24 @@ fn enrich(mut command: Command, path: String) -> Command {
         "icli reminders snapshot" => "icli reminders snapshot --list LIST_ID --json",
         "icli reminders changes" => "icli reminders changes --since CURSOR --limit 100",
         "icli reminders sync-cursor" => "icli reminders sync-cursor --json",
+        "icli notes folders" => "icli notes folders --json",
+        "icli notes recent" => {
+            "icli notes recent --limit 100\nicli notes recent --skip 100 --limit 100"
+        }
+        "icli notes list" => "icli notes list --folder-id FOLDER_ID\nicli notes list --all --json",
+        "icli notes search" => {
+            "icli notes search \"meeting notes\" --limit 20\nicli notes search \"meeting notes\" --all --limit 20"
+        }
+        "icli notes get" => "icli notes get NOTE_ID --with-attachments --json",
+        "icli notes render" => "icli notes render NOTE_ID",
+        "icli notes export" => {
+            "icli notes export NOTE_ID --output ./note.md --export-format markdown\nicli notes export NOTE_ID --output ./note.html --export-format html\nicli notes export NOTE_ID --output ./note.txt"
+        }
+        "icli notes download" => "icli notes download NOTE_ID --output-dir ./note_assets",
+        "icli notes delete" => "icli notes delete NOTE_ID --yes",
+        "icli notes delete-unshared" => "icli notes delete-unshared --yes",
+        "icli notes changes" => "icli notes changes --since CURSOR",
+        "icli notes sync-cursor" => "icli notes sync-cursor --json",
         "icli reminders alarm list" => "icli reminders alarm list REMINDER_ID",
         "icli reminders alarm add-location" => {
             "icli reminders alarm add-location REMINDER_ID --title Home --address \"Home\" --latitude 37.3318 --longitude -122.0312 --proximity arriving"
@@ -446,6 +520,9 @@ fn enrich(mut command: Command, path: String) -> Command {
         _ => "",
     };
     let data_shape = match path.as_str() {
+        "icli version" => {
+            "object: message, version, installed_since, last_successful_update_check, update_check_recommended"
+        }
         "icli update" => {
             "object: current_version, latest_version, update_available, updated, check_only, target, executable, release_url. --check never replaces files. Current/newer versions are not downgraded. Downloads and checksum validation finish before replacement; failures return a structured error."
         }
@@ -478,6 +555,24 @@ fn enrich(mut command: Command, path: String) -> Command {
             "object: changes=[updated/deleted events], cursor, more_available"
         }
         "icli reminders sync-cursor" => "object: cursor (opaque Apple CloudKit token)",
+        "icli notes folders" => "array of {id, name, parent_id, has_subfolders, deleted}",
+        "icli notes recent" | "icli notes list" | "icli notes search" => {
+            "array of {id, title, snippet, modified, folder_id, deleted, locked, shared}; --all list returns {notes, more_available, cursor?}"
+        }
+        "icli notes get" => {
+            "object with note summary and text; --with-attachments adds attachments=[{id, filename, uti, size, downloadable}]"
+        }
+        "icli notes render" => "object: id, html",
+        "icli notes export" => {
+            "object: id, path, format, bytes, attachments? (per-file download results for HTML/Markdown)"
+        }
+        "icli notes download" => "object: note_id, output_dir, downloaded[], failed[]",
+        "icli notes delete" => "object: id, deleted, already_deleted",
+        "icli notes delete-unshared" => {
+            "object: total_notes, deleted[], already_deleted[], skipped_shared[], failed[]"
+        }
+        "icli notes changes" => "object: changes=[updated/deleted notes], cursor, more_available",
+        "icli notes sync-cursor" => "object: cursor (opaque Apple CloudKit token)",
         "icli reminders alarm list"
         | "icli reminders hashtag list"
         | "icli reminders attachment list"
@@ -589,7 +684,7 @@ fn enrich(mut command: Command, path: String) -> Command {
         String::new()
     };
     if path == "icli" {
-        command = command.after_help(format!("Tasks:\n  Update iCLI: update [--check]\n  Set up Mail/Calendar/Contacts: auth app-password, then auth check --app-password\n  Set up Apple Reminders: auth add EMAIL, then auth verify EMAIL CODE\n  Select account/output: config default-user, config format\n  Find calendars: calendar list; set color/share: calendar color, calendar share\n  Read/search events: calendar events list|search|get; write: create|update|delete|import\n  Read/search/send mail: mail folders|list|search|get|download|create|send|update|move|delete\n  Read/search contacts: contacts list|search|get|me; write: create|update|delete; groups\n  Read and manage Apple Reminders: reminders\n  Discover contact properties: contacts help\n\nRun icli <command> --help for complete instructions.\n\n{common}"));
+        command = command.after_help(format!("Tasks:\n  Update iCLI: update [--check]\n  Set up Mail/Calendar/Contacts: auth app-password, then auth check --app-password\n  Set up Apple Reminders: auth add EMAIL, then auth verify EMAIL CODE\n  Select account/output: config default-user, config format\n  Find calendars: calendar list; set color/share: calendar color, calendar share\n  Read/search events: calendar events list|search|get; write: create|update|delete|import\n  Read/search/send mail: mail folders|list|search|get|download|create|send|update|move|delete\n  Read/search contacts: contacts list|search|get|me; write: create|update|delete; groups\n  Read and manage Apple Reminders: reminders\n  Read, export, and soft-delete unshared Apple Notes: notes\n  Discover contact properties: contacts help\n\nRun icli <command> --help for complete instructions.\n\n{common}"));
     } else if !example.is_empty() {
         let previous = command
             .get_after_help()

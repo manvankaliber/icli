@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use srp::{Client, ClientVerifier, EphemeralSecret, Generate, groups::G2048, utils::compute_m2};
 use srp_sha2::{Digest as SrpDigest, Sha256 as SrpSha256};
 use std::{
+    fs::{self, OpenOptions},
     io::{Cursor, Read, Write},
+    path::Path,
     sync::Arc,
     thread,
     time::Duration,
@@ -39,6 +41,8 @@ pub struct SavedAppleSession {
     pub cookies_json: String,
     #[serde(default)]
     pub reminders_pcs_ready: bool,
+    #[serde(default)]
+    pub notes_pcs_ready: bool,
     #[serde(default)]
     pub pending: Option<PendingChallenge>,
 }
@@ -126,6 +130,14 @@ struct AuthEndpoints {
     auth: String,
     setup_override: Option<String>,
 }
+
+struct NotesAttachment {
+    id: String,
+    filename: String,
+    uti: Option<String>,
+    size: Option<u64>,
+    download_url: Option<String>,
+}
 impl Default for AuthEndpoints {
     fn default() -> Self {
         Self {
@@ -212,6 +224,7 @@ impl AppleConnection {
                 session_headers: header_subset(headers),
                 cookies_json: String::new(),
                 reminders_pcs_ready: false,
+                notes_pcs_ready: false,
                 pending: None,
             },
             client,
@@ -679,7 +692,934 @@ impl AppleConnection {
         Ok(body)
     }
 
-    fn reminders_pcs_post(&self, endpoint: &str, payload: Option<&Value>) -> Result<Value> {
+    fn notes_cloudkit_root(&self) -> Result<Url> {
+        let service = self
+            .session
+            .account_data
+            .pointer("/webservices/ckdatabasews/url")
+            .and_then(Value::as_str)
+            .context("Apple did not advertise its Notes CloudKit service")?;
+        let service = Url::parse(&format!("{}/", service.trim_end_matches('/')))
+            .context("Apple advertised an invalid CloudKit service URL")?;
+        if service.scheme() != "https"
+            && !(self.endpoints.setup_override.is_some() && service.host_str() == Some("127.0.0.1"))
+        {
+            bail!("Apple advertised a non-HTTPS CloudKit service URL");
+        }
+        let mut url = service.join("database/1/com.apple.notes/production/private")?;
+        url.query_pairs_mut()
+            .append_pair("remapEnums", "true")
+            .append_pair("getCurrentSyncToken", "true");
+        for (name, value) in service_params(&self.session) {
+            url.query_pairs_mut().append_pair(&name, &value);
+        }
+        Ok(url)
+    }
+
+    fn notes_cloudkit_request(&self, path: &str, payload: &Value) -> Result<Value> {
+        let mut url = self.notes_cloudkit_root()?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("Apple advertised an invalid CloudKit URL"))?;
+            segments.pop_if_empty();
+            for segment in path.split('/') {
+                segments.push(segment);
+            }
+        }
+        let response = self
+            .client
+            .post(url)
+            .headers(icloud_headers())
+            .json(payload)
+            .send()
+            .context("Could not contact Apple's Notes CloudKit service")?;
+        let status = response.status();
+        let body = response.json::<Value>().unwrap_or(Value::Null);
+        if matches!(status.as_u16(), 401 | 403 | 421)
+            || body.get("hsaChallengeRequired").and_then(Value::as_bool) == Some(true)
+        {
+            return Err(recovery(
+                &self.session.account,
+                "auth_refresh_required",
+                format!("Apple Notes CloudKit rejected the saved session (HTTP {status})"),
+                "refresh",
+            ));
+        }
+        if !status.is_success() {
+            bail!("Apple Notes CloudKit request failed (HTTP {status})");
+        }
+        Ok(body)
+    }
+
+    fn request_notes_pcs_access(&mut self, next_command: &str) -> Result<()> {
+        if self.session.notes_pcs_ready {
+            return Ok(());
+        }
+        let state = self.apple_pcs_post("requestWebAccessState", None)?;
+        if state.get("isICDRSDisabled").and_then(Value::as_bool) != Some(true) {
+            self.session.notes_pcs_ready = true;
+            return Ok(());
+        }
+        if state
+            .get("isDeviceConsentedForPCS")
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            let consent = self.apple_pcs_post("enableDeviceConsentForPCS", None)?;
+            if consent
+                .get("isDeviceConsentNotificationSent")
+                .and_then(Value::as_bool)
+                != Some(true)
+            {
+                return Err(RemindersAccessRecovery {
+                    code: "notes_access_required",
+                    message:
+                        "Apple could not request trusted-device approval for Notes data access"
+                            .into(),
+                    next_command: next_command.into(),
+                }
+                .into());
+            }
+            return Err(RemindersAccessRecovery {
+                code: "notes_access_required",
+                message: "Apple requested trusted-device approval for Notes data access; approve it, then retry the Notes command".into(),
+                next_command: next_command.into(),
+            }
+            .into());
+        }
+        for attempt in 0..10 {
+            let response = self.apple_pcs_post(
+                "requestPCS",
+                Some(&json!({
+                    "appName": "notes",
+                    "derivedFromUserAction": attempt == 0,
+                })),
+            )?;
+            if response.get("status").and_then(Value::as_str) == Some("success") {
+                self.session.notes_pcs_ready = true;
+                return Ok(());
+            }
+            let message = response.get("message").and_then(Value::as_str);
+            if !matches!(
+                message,
+                Some("Requested the device to upload cookies.")
+                    | Some("Cookies not available yet on server.")
+            ) {
+                return Err(RemindersAccessRecovery {
+                    code: "notes_access_required",
+                    message: "Apple has not granted Notes data access yet; approve the request on a trusted device, then retry".into(),
+                    next_command: next_command.into(),
+                }
+                .into());
+            }
+            if attempt < 9 {
+                thread::sleep(Duration::from_secs(5));
+            }
+        }
+        Err(RemindersAccessRecovery {
+            code: "notes_access_required",
+            message: "Apple Notes data access is still pending; approve it on a trusted device, then retry".into(),
+            next_command: next_command.into(),
+        }
+        .into())
+    }
+
+    fn notes_zone_records(&self, record_type: &str, sync_token: Option<&str>) -> Result<Value> {
+        let mut request = json!({
+            "zones": [{
+                "zoneID": {"zoneName": "Notes", "zoneType": "REGULAR_CUSTOM_ZONE"},
+                "desiredRecordTypes": if record_type == "Note" { json!(["Note", "PasswordProtectedNote"]) } else { json!([record_type]) },
+                "desiredKeys": ["TitleEncrypted", "SnippetEncrypted", "ModificationDate", "Deleted", "Folder", "ParentFolder", "HasSubfolder", "share", "participants"],
+                "reverse": true,
+            }]
+        });
+        if let Some(token) = sync_token {
+            request["zones"][0]["syncToken"] = json!(token);
+        }
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut seen_cursors = std::collections::HashSet::new();
+        if let Some(token) = sync_token {
+            seen_cursors.insert(token.to_owned());
+        }
+        loop {
+            if let Some(token) = cursor.take() {
+                if !seen_cursors.insert(token.clone()) {
+                    bail!("Apple repeated a Notes pagination cursor");
+                }
+                request["zones"][0]["syncToken"] = json!(token);
+            }
+            let response = self.notes_cloudkit_request("changes/zone", &request)?;
+            let zone = response
+                .get("zones")
+                .and_then(Value::as_array)
+                .and_then(|zones| zones.first())
+                .context("Apple returned an invalid Notes zone response")?;
+            if let Some(code) = zone.get("serverErrorCode").and_then(Value::as_str) {
+                bail!("Apple Notes zone read failed ({code})");
+            }
+            if let Some(items) = zone.get("records").and_then(Value::as_array) {
+                all.extend(items.iter().cloned());
+            }
+            if zone.get("moreComing").and_then(Value::as_bool) != Some(true) {
+                return Ok(json!({"records":all,"sync_token":zone.get("syncToken")}));
+            }
+            cursor = Some(
+                zone.get("syncToken")
+                    .and_then(Value::as_str)
+                    .context("Apple omitted the Notes pagination token")?
+                    .to_owned(),
+            );
+        }
+    }
+
+    pub fn notes_folders(&mut self) -> Result<Vec<Value>> {
+        let next = format!(
+            "icli notes folders --email {}",
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let response = self.notes_zone_records("Folder", None)?;
+        let mut rows = response["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|record| record.get("recordType").and_then(Value::as_str) == Some("Folder"))
+            .filter(|record| !cloudkit_field_truthy(record.get("fields"), "Deleted"))
+            .map(|record| {
+                let fields = record.get("fields");
+                json!({
+                    "id":record.get("recordName"),
+                    "name":notes_field_text(fields, "TitleEncrypted"),
+                    "parent_id":notes_reference(fields, "ParentFolder"),
+                    "has_subfolders":cloudkit_field_truthy(fields, "HasSubfolder"),
+                    "deleted":cloudkit_field_truthy(fields, "Deleted"),
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+        Ok(rows)
+    }
+
+    pub fn notes_recent(&mut self, skip: usize, limit: usize) -> Result<(Vec<Value>, bool)> {
+        self.notes_search(None, skip, limit)
+    }
+
+    pub fn notes_search(
+        &mut self,
+        title: Option<&str>,
+        skip: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, bool)> {
+        if let Some(title) = title {
+            let title = title.trim();
+            if title.is_empty() || title.len() > 256 || title.chars().any(char::is_control) {
+                bail!(
+                    "Invalid Notes title query; use 1 to 256 characters without control characters"
+                );
+            }
+        }
+        self.notes_search_in_folder(title, None, skip, limit)
+    }
+
+    pub fn notes_search_all(
+        &mut self,
+        title: &str,
+        skip: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, bool, Option<String>)> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 256 || title.chars().any(char::is_control) {
+            bail!("Invalid Notes title query; use 1 to 256 characters without control characters");
+        }
+        if limit == 0 {
+            return Ok((Vec::new(), false, None));
+        }
+        let next = format!(
+            "icli notes search {} --all --email {} --skip {skip} --limit {limit}",
+            crate::cli_quote(title),
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let response = self.notes_zone_records("Note", None)?;
+        let cursor = response
+            .get("sync_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let query = title.to_lowercase();
+        let mut rows = response["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|record| {
+                matches!(
+                    record.get("recordType").and_then(Value::as_str),
+                    Some("Note" | "PasswordProtectedNote")
+                )
+            })
+            .map(notes_summary)
+            .filter(|row| row["deleted"].as_bool() != Some(true))
+            .filter(|row| {
+                row["title"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query)
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by(|a, b| b["modified"].as_str().cmp(&a["modified"].as_str()));
+        let more = rows.len() > skip.saturating_add(limit);
+        let rows = rows.into_iter().skip(skip).take(limit).collect();
+        Ok((rows, more, cursor))
+    }
+
+    pub fn notes_recent_in_folder(
+        &mut self,
+        folder_id: &str,
+        skip: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, bool, Option<String>)> {
+        let (rows, more) = self.notes_search_in_folder(None, Some(folder_id), skip, limit)?;
+        Ok((rows, more, None))
+    }
+
+    fn notes_search_in_folder(
+        &mut self,
+        title: Option<&str>,
+        folder_id: Option<&str>,
+        skip: usize,
+        limit: usize,
+    ) -> Result<(Vec<Value>, bool)> {
+        if limit == 0 {
+            return Ok((Vec::new(), false));
+        }
+        let operation = if let Some(folder) = folder_id {
+            format!("list --folder-id {}", crate::cli_quote(folder))
+        } else if let Some(title) = title {
+            format!("search {}", crate::cli_quote(title))
+        } else {
+            "recent".to_owned()
+        };
+        let next = format!(
+            "icli notes {operation} --email {} --skip {skip} --limit {limit}",
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let filters = vec![
+            json!({"comparator":"EQUALS","fieldName":"indexName","fieldValue":{"type":"STRING","value":"recents"}}),
+        ];
+        let mut request = json!({
+            "query": {
+                "recordType": "SearchIndexes",
+                "filterBy": filters,
+                "sortBy": [{"fieldName":"modTime","ascending":false}]
+            },
+            "zoneID": {"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+            "desiredKeys": ["TitleEncrypted","SnippetEncrypted","ModificationDate","Deleted","Folder"],
+            "resultsLimit": 200
+        });
+        let mut rows = Vec::new();
+        let mut remaining_skip = skip;
+        let mut seen_markers = std::collections::HashSet::new();
+        loop {
+            let response = self.notes_cloudkit_request("records/query", &request)?;
+            let records = response
+                .get("records")
+                .and_then(Value::as_array)
+                .context("Apple returned an invalid Notes query response")?;
+            for record in records {
+                if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+                    bail!("Apple Notes query failed ({code})");
+                }
+                let row = notes_summary(record);
+                if row["deleted"].as_bool() == Some(true) {
+                    continue;
+                }
+                if folder_id.is_some_and(|folder| {
+                    row["folder_id"].as_str() != Some(folder)
+                        && row["folder_id"].as_str()
+                            != Some(notes_record_name(folder, "Folder").as_str())
+                }) {
+                    continue;
+                }
+                if title.is_some_and(|query| {
+                    !row["title"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(&query.to_lowercase())
+                }) {
+                    continue;
+                }
+                if remaining_skip > 0 {
+                    remaining_skip -= 1;
+                    continue;
+                }
+                rows.push(row);
+                if rows.len() > limit {
+                    break;
+                }
+            }
+            if rows.len() > limit {
+                break;
+            }
+            match response.get("continuationMarker").and_then(Value::as_str) {
+                Some(marker) if !marker.is_empty() => {
+                    if !seen_markers.insert(marker.to_owned()) {
+                        bail!("Apple repeated a Notes search pagination marker");
+                    }
+                    request["continuationMarker"] = json!(marker);
+                }
+                _ => break,
+            }
+        }
+        let more = rows.len() > limit;
+        rows.truncate(limit);
+        Ok((rows, more))
+    }
+
+    pub fn notes_list_all(
+        &mut self,
+        skip: usize,
+        limit: usize,
+        since: Option<&str>,
+        folder_id: Option<&str>,
+    ) -> Result<(Vec<Value>, bool, Option<String>)> {
+        if limit == 0 {
+            return Ok((Vec::new(), false, None));
+        }
+        let mut next = format!(
+            "icli notes list --email {} --all --skip {skip} --limit {limit}",
+            crate::cli_quote(&self.session.account)
+        );
+        if let Some(folder) = folder_id {
+            next.push_str(&format!(" --folder-id {}", crate::cli_quote(folder)));
+        }
+        if let Some(cursor) = since {
+            next.push_str(&format!(" --since {}", crate::cli_quote(cursor)));
+        }
+        self.request_notes_pcs_access(&next)?;
+        let response = self.notes_zone_records("Note", since)?;
+        let token = response
+            .get("sync_token")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let mut rows = response["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|record| {
+                matches!(
+                    record.get("recordType").and_then(Value::as_str),
+                    Some("Note" | "PasswordProtectedNote")
+                )
+            })
+            .map(notes_summary)
+            .collect::<Vec<_>>();
+        if let Some(folder_id) = folder_id {
+            let folder_id = notes_record_name(folder_id, "Folder");
+            let short_folder_id = folder_id.rsplit('/').next().unwrap_or(&folder_id);
+            rows.retain(|row| {
+                row["folder_id"].as_str() == Some(folder_id.as_str())
+                    || row["folder_id"].as_str() == Some(short_folder_id)
+            });
+        }
+        rows.sort_by(|a, b| b["modified"].as_str().cmp(&a["modified"].as_str()));
+        let more = rows.len() > skip.saturating_add(limit);
+        let rows = rows.into_iter().skip(skip).take(limit).collect();
+        Ok((rows, more, token))
+    }
+
+    pub fn notes_get(&mut self, id: &str, with_attachments: bool) -> Result<Value> {
+        let next = format!(
+            "icli notes get {} --email {}",
+            crate::cli_quote(id),
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let response = self.notes_cloudkit_request("records/lookup", &json!({
+            "records":[{"recordName":notes_record_name(id,"Note")}],
+            "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+            "desiredKeys":["TitleEncrypted","SnippetEncrypted","TextDataEncrypted","ModificationDate","Deleted","Folder","Attachments"]
+        }))?;
+        let record_name = notes_record_name(id, "Note");
+        let record = response
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())
+                })
+            })
+            .context("No Apple Notes record found with that ID")?;
+        if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes record lookup failed ({code})");
+        }
+        if record.get("fields").and_then(Value::as_object).is_none() {
+            bail!("Apple returned a Notes lookup record without fields");
+        }
+        let mut row = notes_summary(record);
+        let body = notes_field_bytes(record.get("fields"), "TextDataEncrypted");
+        row["text"] = body
+            .and_then(decode_notes_body)
+            .map(Value::String)
+            .unwrap_or(Value::Null);
+        if with_attachments {
+            row["attachments"] = json!(self.notes_attachment_metadata(id)?);
+        }
+        Ok(row)
+    }
+
+    fn notes_attachment_metadata(&mut self, id: &str) -> Result<Vec<Value>> {
+        Ok(self
+            .notes_attachment_records(id)?
+            .into_iter()
+            .map(|attachment| {
+                json!({
+                    "id":attachment.id,
+                    "filename":attachment.filename,
+                    "uti":attachment.uti,
+                    "size":attachment.size,
+                    "downloadable":attachment.download_url.is_some()
+                })
+            })
+            .collect())
+    }
+
+    pub fn notes_download_attachments(&mut self, id: &str, output_dir: &Path) -> Result<Value> {
+        let next = format!(
+            "icli notes download {} --output-dir ./attachments --email {}",
+            crate::cli_quote(id),
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let attachments = self.notes_attachment_records(id)?;
+        fs::create_dir_all(output_dir).with_context(|| {
+            format!(
+                "Could not create attachment directory {}",
+                output_dir.display()
+            )
+        })?;
+        let mut downloaded = Vec::new();
+        let mut failed = Vec::new();
+        for (index, attachment) in attachments.into_iter().enumerate() {
+            let Some(url) = attachment.download_url.as_deref() else {
+                failed.push(json!({"id":attachment.id,"status":"failed","reason":"Apple did not provide a downloadable asset"}));
+                continue;
+            };
+            let filename = safe_notes_attachment_filename(
+                &attachment.filename,
+                attachment.uti.as_deref(),
+                &attachment.id,
+                index,
+            );
+            let path = unique_notes_attachment_path(output_dir, &filename, &attachment.id);
+            match download_notes_asset(url, &path) {
+                Ok(bytes) => downloaded.push(json!({
+                    "id":attachment.id,
+                    "filename":path.file_name().and_then(|name| name.to_str()).unwrap_or(&filename),
+                    "path":path,
+                    "bytes":bytes,
+                    "status":"downloaded"
+                })),
+                Err(error) => failed.push(json!({
+                    "id":attachment.id,
+                    "filename":filename,
+                    "status":"failed",
+                    "reason":format!("{error:#}")
+                })),
+            }
+        }
+        Ok(json!({
+            "note_id":notes_record_name(id,"Note"),
+            "output_dir":output_dir,
+            "downloaded":downloaded,
+            "failed":failed
+        }))
+    }
+
+    fn notes_attachment_records(&mut self, id: &str) -> Result<Vec<NotesAttachment>> {
+        let record_name = notes_record_name(id, "Note");
+        let lookup = self.notes_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":record_name}],
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredKeys":["Attachments"]
+            }),
+        )?;
+        let note = lookup
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| {
+                records.iter().find(|record| {
+                    record.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())
+                })
+            })
+            .context("No Apple Notes record found with that ID")?;
+        if let Some(code) = note.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes record lookup failed ({code})");
+        }
+        let ids = notes_attachment_ids(note.get("fields"))
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        let mut ids = ids;
+        let inline_ids = notes_field_bytes(note.get("fields"), "TextDataEncrypted")
+            .as_deref()
+            .map(notes_body_attachment_ids)
+            .unwrap_or_default();
+        for attachment_id in &inline_ids {
+            if !ids.contains(attachment_id) {
+                ids.push(attachment_id.clone());
+            }
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let response = self.notes_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":ids.iter().map(|id| json!({"recordName":id})).collect::<Vec<_>>(),
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredKeys":["Filename","Name","FileName","AttachmentUTI","UTI","Size","FileSize","AttachmentIdentifier","attachmentIdentifier","Identifier","PrimaryAsset","FallbackPDF","PaperAssets","PreviewImages","FallbackImage","Thumbnail","FirstAttachmentThumbnail","Media"]
+            }),
+        )?;
+        let records = response
+            .get("records")
+            .and_then(Value::as_array)
+            .context("Apple returned an invalid Notes attachment response")?;
+        let mut attachments = Vec::new();
+        let mut media_for_attachment = Vec::new();
+        for id in ids {
+            let record = records.iter().find(|record| {
+                record.get("recordName").and_then(Value::as_str) == Some(id.as_str())
+                    || ["AttachmentIdentifier", "attachmentIdentifier", "Identifier"]
+                        .iter()
+                        .any(|key| {
+                            cloudkit_field_value(record.get("fields"), key).and_then(Value::as_str)
+                                == Some(id.as_str())
+                        })
+            });
+            let Some(record) = record else {
+                if inline_ids.contains(&id) {
+                    continue;
+                }
+                bail!("Apple omitted a linked Notes attachment");
+            };
+            if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+                if inline_ids.contains(&id) {
+                    continue;
+                }
+                bail!("Apple Notes attachment lookup failed ({code})");
+            }
+            let fields = record.get("fields");
+            let filename = ["Filename", "Name", "FileName"]
+                .iter()
+                .find_map(|key| cloudkit_field_value(fields, key).and_then(Value::as_str))
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("attachment-{}", attachments.len() + 1));
+            let uti = ["AttachmentUTI", "UTI"]
+                .iter()
+                .find_map(|key| cloudkit_field_value(fields, key).and_then(Value::as_str))
+                .map(str::to_owned);
+            let size = ["Size", "FileSize"]
+                .iter()
+                .find_map(|key| cloudkit_field_value(fields, key).and_then(Value::as_u64));
+            let download_url = [
+                "PrimaryAsset",
+                "FallbackPDF",
+                "PaperAssets",
+                "PreviewImages",
+                "FallbackImage",
+                "Thumbnail",
+                "FirstAttachmentThumbnail",
+            ]
+            .iter()
+            .find_map(|key| cloudkit_asset_url(fields.and_then(|fields| fields.get(*key))));
+            if let Some(media_id) = notes_reference(fields, "Media") {
+                media_for_attachment.push((id.clone(), media_id));
+            }
+            attachments.push(NotesAttachment {
+                id,
+                filename,
+                uti,
+                size,
+                download_url,
+            });
+        }
+
+        let media_ids = media_for_attachment
+            .iter()
+            .map(|(_, media_id)| media_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        if !media_ids.is_empty() {
+            let media_response = self.notes_cloudkit_request(
+                "records/lookup",
+                &json!({
+                    "records":media_ids.iter().map(|id| json!({"recordName":id})).collect::<Vec<_>>(),
+                    "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"}
+                }),
+            )?;
+            let media_records = media_response
+                .get("records")
+                .and_then(Value::as_array)
+                .context("Apple returned an invalid Notes media response")?;
+            for (attachment_id, media_id) in media_for_attachment {
+                let Some(media_record) = media_records.iter().find(|record| {
+                    record.get("recordName").and_then(Value::as_str) == Some(media_id.as_str())
+                }) else {
+                    continue;
+                };
+                let media_url = cloudkit_asset_url(media_record.get("fields"));
+                if let Some(attachment) = attachments
+                    .iter_mut()
+                    .find(|attachment| attachment.id == attachment_id)
+                {
+                    if attachment.download_url.is_none() {
+                        attachment.download_url = media_url;
+                    }
+                }
+            }
+        }
+        Ok(attachments)
+    }
+
+    pub fn notes_delete(&mut self, id: &str) -> Result<Value> {
+        let next = format!(
+            "icli notes delete {} --yes --email {}",
+            crate::cli_quote(id),
+            crate::cli_quote(&self.session.account)
+        );
+        self.request_notes_pcs_access(&next)?;
+        let record_name = notes_record_name(id, "Note");
+        let lookup = self.notes_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":record_name}],
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredKeys":["Deleted","Folder","TitleEncrypted","share","participants"]
+            }),
+        )?;
+        let record = lookup
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| {
+                records.iter().find(|record| {
+                    record.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())
+                })
+            })
+            .context("No Apple Notes record found with that ID")?;
+        if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes record lookup failed ({code})");
+        }
+        record
+            .get("fields")
+            .and_then(Value::as_object)
+            .context("Apple returned a Notes lookup record without fields")?;
+        let record_type = record
+            .get("recordType")
+            .and_then(Value::as_str)
+            .filter(|record_type| matches!(*record_type, "Note" | "PasswordProtectedNote"))
+            .context("Apple returned an unsupported Notes record type")?;
+        if notes_summary(record)["shared"].as_bool() == Some(true) {
+            bail!("This Apple note is shared; no delete was sent");
+        }
+        if cloudkit_field_truthy(record.get("fields"), "Deleted")
+            || record.get("deleted").and_then(Value::as_bool) == Some(true)
+        {
+            return Ok(json!({"id":record_name,"deleted":true,"already_deleted":true}));
+        }
+        let change_tag = record
+            .get("recordChangeTag")
+            .and_then(Value::as_str)
+            .context("Apple omitted the Notes change tag; no delete was sent")?;
+        let modified = self.notes_cloudkit_request(
+            "records/modify",
+            &json!({
+                "atomic":true,
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "operations":[{
+                    "operationType":"update",
+                    "record":{
+                        "recordName":record_name,
+                        "recordType":record_type,
+                        "recordChangeTag":change_tag,
+                        "fields":{"Deleted":{"type":"INT64","value":1}}
+                    }
+                }]
+            }),
+        )?;
+        let result = modified
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| records.first())
+            .context("Apple returned an invalid Notes delete response")?;
+        if let Some(code) = result.get("serverErrorCode").and_then(Value::as_str) {
+            bail!("Apple Notes soft-delete failed ({code})");
+        }
+
+        let verification = self.notes_cloudkit_request(
+            "records/lookup",
+            &json!({
+                "records":[{"recordName":record_name}],
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredKeys":["Deleted","share","participants"]
+            }),
+        )?;
+        let verified_record = verification
+            .get("records")
+            .and_then(Value::as_array)
+            .and_then(|records| {
+                records.iter().find(|record| {
+                    record.get("recordName").and_then(Value::as_str) == Some(record_name.as_str())
+                })
+            })
+            .context("Apple accepted the Notes delete, but readback found no record")?;
+        if let Some(code) = verified_record
+            .get("serverErrorCode")
+            .and_then(Value::as_str)
+        {
+            bail!("Apple accepted the Notes delete, but readback failed ({code})");
+        }
+        if !cloudkit_field_truthy(verified_record.get("fields"), "Deleted") {
+            bail!("Apple accepted the Notes delete, but readback did not confirm it");
+        }
+        Ok(json!({"id":record_name,"deleted":true,"already_deleted":false}))
+    }
+
+    pub fn notes_delete_unshared(&mut self) -> Result<Value> {
+        self.request_notes_pcs_access("icli notes delete-unshared --yes")?;
+        let response = self.notes_zone_records("Note", None)?;
+        let records = response["records"].as_array().cloned().unwrap_or_default();
+        let listing_errors = records
+            .iter()
+            .filter(|record| {
+                record
+                    .get("serverErrorCode")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+            .count();
+        if listing_errors > 0 {
+            bail!("Apple returned {listing_errors} errored Notes records; no notes were deleted");
+        }
+        let mut deleted = Vec::new();
+        let mut already_deleted = Vec::new();
+        let mut skipped_shared = Vec::new();
+        let mut failed = Vec::new();
+
+        for record in records.iter().filter(|record| {
+            matches!(
+                record.get("recordType").and_then(Value::as_str),
+                Some("Note" | "PasswordProtectedNote")
+            )
+        }) {
+            let id = record
+                .get("recordName")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if id.is_empty() {
+                failed.push(json!({"status":"failed","reason":"Apple returned a Notes record without an ID"}));
+                continue;
+            }
+            if let Some(code) = record.get("serverErrorCode").and_then(Value::as_str) {
+                failed.push(
+                    json!({"id":id,"status":"failed","reason":format!("CloudKit returned {code}")}),
+                );
+                continue;
+            }
+            let summary = notes_summary(record);
+            if summary["deleted"].as_bool() == Some(true) {
+                already_deleted.push(json!({"id":id,"status":"already_deleted"}));
+            } else if summary["shared"].as_bool() == Some(true) {
+                skipped_shared.push(json!({"id":id,"status":"skipped_shared"}));
+            } else {
+                match self.notes_delete(id) {
+                    Ok(result) if result["already_deleted"].as_bool() == Some(true) => {
+                        already_deleted.push(json!({"id":id,"status":"already_deleted"}));
+                    }
+                    Ok(result) => deleted
+                        .push(json!({"id":id,"status":"deleted","verified":result["deleted"]})),
+                    Err(error) if format!("{error:#}").contains("This Apple note is shared") => {
+                        skipped_shared.push(json!({"id":id,"status":"skipped_shared"}));
+                    }
+                    Err(error) => failed
+                        .push(json!({"id":id,"status":"failed","reason":format!("{error:#}")})),
+                }
+            }
+        }
+        Ok(json!({
+            "total_notes":deleted.len()+already_deleted.len()+skipped_shared.len()+failed.len(),
+            "deleted":deleted,
+            "already_deleted":already_deleted,
+            "skipped_shared":skipped_shared,
+            "failed":failed
+        }))
+    }
+
+    pub fn notes_sync_cursor(&mut self) -> Result<String> {
+        self.request_notes_pcs_access("icli notes sync-cursor")?;
+        let query = self.notes_cloudkit_request("records/query", &json!({
+            "query":{"recordType":"SearchIndexes","filterBy":[{"comparator":"EQUALS","fieldName":"indexName","fieldValue":{"type":"STRING","value":"recents"}}]},
+            "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},"resultsLimit":1
+        }));
+        if let Ok(response) = query
+            && let Some(cursor) = response.get("syncToken").and_then(Value::as_str)
+        {
+            return Ok(cursor.to_owned());
+        }
+
+        let response = self.notes_cloudkit_request(
+            "changes/zone",
+            &json!({"zones":[{
+                "zoneID":{"zoneName":"Notes","zoneType":"REGULAR_CUSTOM_ZONE"},
+                "desiredRecordTypes":[],"desiredKeys":[],"reverse":false
+            }]}),
+        )?;
+        response
+            .get("zones")
+            .and_then(Value::as_array)
+            .and_then(|zones| zones.first())
+            .and_then(|zone| zone.get("syncToken"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("Apple did not return a Notes sync cursor")
+    }
+
+    pub fn notes_changes(&mut self, since: Option<&str>) -> Result<Value> {
+        let mut next = format!(
+            "icli notes changes --email {}",
+            crate::cli_quote(&self.session.account)
+        );
+        if let Some(cursor) = since {
+            next.push_str(&format!(" --since {}", crate::cli_quote(cursor)));
+        }
+        self.request_notes_pcs_access(&next)?;
+        let response = self.notes_zone_records("Note", since)?;
+        let token = response.get("sync_token").cloned().unwrap_or(Value::Null);
+        let changes = response["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|record| {
+                if record.get("deleted").and_then(Value::as_bool) == Some(true) {
+                    json!({"id":record.get("recordName"),"deleted":true})
+                } else {
+                    let mut summary = notes_summary(record);
+                    summary["deleted"] = json!(summary["deleted"].as_bool() == Some(true));
+                    json!({"note":summary,"deleted":summary["deleted"]})
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"changes":changes,"cursor":token,"more_available":false}))
+    }
+
+    fn apple_pcs_post(&self, endpoint: &str, payload: Option<&Value>) -> Result<Value> {
         let setup = if let Some(setup) = &self.endpoints.setup_override {
             setup.clone()
         } else {
@@ -705,13 +1645,13 @@ impl AppleConnection {
                 &self.session.account,
                 "auth_refresh_required",
                 format!(
-                    "Apple rejected the saved session during Reminders data access (HTTP {status})"
+                    "Apple rejected the saved session during private data access (HTTP {status})"
                 ),
                 "refresh",
             ));
         }
         if !status.is_success() {
-            bail!("Apple Reminders data-access request failed (HTTP {status})");
+            bail!("Apple private data-access request failed (HTTP {status})");
         }
         Ok(body)
     }
@@ -722,7 +1662,7 @@ impl AppleConnection {
         if self.session.reminders_pcs_ready {
             return Ok(());
         }
-        let state = self.reminders_pcs_post("requestWebAccessState", None)?;
+        let state = self.apple_pcs_post("requestWebAccessState", None)?;
         if state.get("isICDRSDisabled").and_then(Value::as_bool) != Some(true) {
             self.session.reminders_pcs_ready = true;
             return Ok(());
@@ -733,7 +1673,7 @@ impl AppleConnection {
             .and_then(Value::as_bool)
             == Some(false)
         {
-            let consent = self.reminders_pcs_post("enableDeviceConsentForPCS", None)?;
+            let consent = self.apple_pcs_post("enableDeviceConsentForPCS", None)?;
             if consent
                 .get("isDeviceConsentNotificationSent")
                 .and_then(Value::as_bool)
@@ -757,7 +1697,7 @@ impl AppleConnection {
         }
 
         for attempt in 0..10 {
-            let response = self.reminders_pcs_post(
+            let response = self.apple_pcs_post(
                 "requestPCS",
                 Some(&json!({
                     "appName": "reminders",
@@ -1948,6 +2888,344 @@ fn cloudkit_field_value<'a>(fields: Option<&'a Value>, name: &str) -> Option<&'a
     fields?.get(name)?.get("value")
 }
 
+fn notes_record_name(id: &str, prefix: &str) -> String {
+    id.strip_prefix(&format!("{prefix}/"))
+        .unwrap_or(id)
+        .to_owned()
+}
+
+fn notes_reference(fields: Option<&Value>, name: &str) -> Option<String> {
+    fields?
+        .get(name)?
+        .get("value")?
+        .get("recordName")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn notes_field_bytes(fields: Option<&Value>, name: &str) -> Option<Vec<u8>> {
+    let value = cloudkit_field_value(fields, name)?;
+    if let Some(text) = value.as_str() {
+        let mut padded = text.to_owned();
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+        STANDARD
+            .decode(padded)
+            .ok()
+            .or_else(|| Some(text.as_bytes().to_vec()))
+    } else if let Some(items) = value.as_array() {
+        items
+            .iter()
+            .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()))
+            .collect()
+    } else {
+        None
+    }
+}
+
+fn notes_field_text(fields: Option<&Value>, name: &str) -> Value {
+    let Some(field) = fields.and_then(|fields| fields.get(name)) else {
+        return Value::Null;
+    };
+    let Some(value) = field.get("value") else {
+        return Value::Null;
+    };
+    let is_bytes = matches!(
+        field.get("type").and_then(Value::as_str),
+        Some("ENCRYPTED_BYTES" | "BYTES")
+    );
+    if !is_bytes {
+        return value.clone();
+    }
+    let bytes = if let Some(text) = value.as_str() {
+        let mut padded = text.to_owned();
+        while padded.len() % 4 != 0 {
+            padded.push('=');
+        }
+        STANDARD.decode(padded).ok()
+    } else if let Some(items) = value.as_array() {
+        items
+            .iter()
+            .map(|item| item.as_u64().and_then(|number| u8::try_from(number).ok()))
+            .collect::<Option<Vec<_>>>()
+    } else {
+        None
+    };
+    bytes
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
+fn notes_summary(record: &Value) -> Value {
+    let fields = record.get("fields");
+    let modified = cloudkit_due_date(cloudkit_field_value(fields, "ModificationDate"))
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            record
+                .pointer("/modified/timestamp")
+                .and_then(|stamp| cloudkit_due_date(Some(stamp)).as_str().map(str::to_owned))
+        });
+    let record_type = record
+        .get("recordType")
+        .and_then(Value::as_str)
+        .unwrap_or("Note");
+    let folder_id =
+        notes_reference(fields, "Folder").or_else(|| notes_reference(fields, "Folders"));
+    let shared = record.get("share").is_some_and(|share| !share.is_null())
+        || record
+            .get("participants")
+            .and_then(Value::as_array)
+            .is_some_and(|participants| participants.len() > 1);
+    json!({
+        "id":record.get("recordName"),
+        "title":notes_field_text(fields,"TitleEncrypted"),
+        "snippet":notes_field_text(fields,"SnippetEncrypted"),
+        "modified":modified,
+        "folder_id":folder_id,
+        "deleted":cloudkit_field_truthy(fields,"Deleted") || record.get("deleted").and_then(Value::as_bool) == Some(true),
+        "locked":record_type == "PasswordProtectedNote",
+        "shared":shared
+    })
+}
+
+fn decode_notes_body(encoded: Vec<u8>) -> Option<String> {
+    let document = decompress_crdt_document(&encoded);
+    // NoteStoreProto.document is field 2, Document.note is field 3, and
+    // Note.note_text is field 2. Keep unknown protobuf fields safely skippable.
+    let root = protobuf_length_fields(&document).ok()?;
+    let document = root.iter().find(|(number, _)| *number == 2)?.1;
+    let document_fields = protobuf_length_fields(document).ok()?;
+    let note = document_fields.iter().find(|(number, _)| *number == 3)?.1;
+    let note_fields = protobuf_length_fields(note).ok()?;
+    let text = note_fields.iter().find(|(number, _)| *number == 2)?.1;
+    String::from_utf8(text.to_vec()).ok()
+}
+
+fn notes_attachment_ids(fields: Option<&Value>) -> Value {
+    let ids = cloudkit_field_value(fields, "Attachments")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|reference| {
+            reference
+                .get("recordName")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    json!(ids)
+}
+
+fn notes_body_attachment_ids(encoded: &[u8]) -> Vec<String> {
+    let document = decompress_crdt_document(encoded);
+    let Ok(root_fields) = protobuf_length_fields(&document) else {
+        return Vec::new();
+    };
+    let Some(document) = root_fields
+        .iter()
+        .find_map(|(field, value)| (*field == 2).then_some(*value))
+    else {
+        return Vec::new();
+    };
+    let Ok(document_fields) = protobuf_length_fields(document) else {
+        return Vec::new();
+    };
+    let Some(note) = document_fields
+        .iter()
+        .find_map(|(field, value)| (*field == 3).then_some(*value))
+    else {
+        return Vec::new();
+    };
+    let Ok(note_fields) = protobuf_length_fields(note) else {
+        return Vec::new();
+    };
+
+    let mut ids = Vec::new();
+    for run in note_fields
+        .iter()
+        .filter_map(|(field, value)| (*field == 5).then_some(*value))
+    {
+        let Ok(run_fields) = protobuf_length_fields(run) else {
+            continue;
+        };
+        let Some(attachment_info) = run_fields
+            .iter()
+            .find_map(|(field, value)| (*field == 12).then_some(*value))
+        else {
+            continue;
+        };
+        let Ok(attachment_fields) = protobuf_length_fields(attachment_info) else {
+            continue;
+        };
+        let Some(id) = attachment_fields
+            .iter()
+            .find_map(|(field, value)| (*field == 1).then_some(*value))
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_owned());
+        }
+    }
+    ids
+}
+
+fn cloudkit_asset_url(asset_field: Option<&Value>) -> Option<String> {
+    fn find(value: &Value) -> Option<String> {
+        match value {
+            Value::Object(object) => {
+                if let Some(url) = object.get("downloadURL").and_then(Value::as_str) {
+                    return Some(url.to_owned());
+                }
+                object.values().find_map(find)
+            }
+            Value::Array(values) => values.iter().find_map(find),
+            _ => None,
+        }
+    }
+    find(asset_field?)
+}
+
+fn safe_notes_attachment_filename(
+    filename: &str,
+    uti: Option<&str>,
+    id: &str,
+    index: usize,
+) -> String {
+    let leaf = Path::new(filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let mut safe = leaf
+        .chars()
+        .map(|ch| {
+            if ch.is_control() || "<>:\"/\\|?*".contains(ch) {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim_matches([' ', '.'])
+        .to_owned();
+    if safe.is_empty() {
+        let suffix = match uti.unwrap_or_default() {
+            "public.jpeg" | "public.jpg" => ".jpg",
+            "public.png" => ".png",
+            "com.adobe.pdf" => ".pdf",
+            "public.mpeg-4" => ".mp4",
+            _ => "",
+        };
+        let short_id = id
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .take(12)
+            .collect::<String>();
+        safe = format!(
+            "attachment-{}{}",
+            if short_id.is_empty() {
+                (index + 1).to_string()
+            } else {
+                short_id
+            },
+            suffix
+        );
+    }
+    if safe.len() > 180 {
+        safe.truncate(180);
+    }
+    safe
+}
+
+fn split_path_extension(filename: &str) -> (&str, &str) {
+    match filename.rfind('.') {
+        Some(index) if index > 0 => (&filename[..index], &filename[index..]),
+        _ => (filename, ""),
+    }
+}
+
+fn unique_notes_attachment_path(output_dir: &Path, filename: &str, id: &str) -> std::path::PathBuf {
+    let base_path = output_dir.join(filename);
+    if !base_path.exists() {
+        return base_path;
+    }
+    let (stem, extension) = split_path_extension(filename);
+    let id_suffix = id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    let id_suffix = if id_suffix.is_empty() {
+        "attachment".to_owned()
+    } else {
+        id_suffix
+    };
+    let mut attempt = 1u64;
+    loop {
+        let suffix = if attempt == 1 {
+            id_suffix.clone()
+        } else {
+            format!("{id_suffix}-{attempt}")
+        };
+        let path = output_dir.join(format!("{stem}-{suffix}{extension}"));
+        if !path.exists() {
+            return path;
+        }
+        attempt = attempt.saturating_add(1);
+    }
+}
+
+fn download_notes_asset(url: &str, path: &Path) -> Result<u64> {
+    let parsed = Url::parse(url).context("Apple returned an invalid Notes asset URL")?;
+    if parsed.scheme() != "https" || parsed.host_str().is_none() {
+        bail!("Apple returned a non-HTTPS Notes asset URL; download refused");
+    }
+    let client = HttpClient::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() == "https" {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .build()
+        .context("Could not initialize the Notes asset downloader")?;
+    let mut response = client
+        .get(parsed)
+        .send()
+        .map_err(|_| anyhow::anyhow!("Could not download the Apple Notes attachment"))?;
+    if !response.status().is_success() {
+        bail!(
+            "Apple Notes asset download failed (HTTP {})",
+            response.status()
+        );
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("Could not create attachment file {}", path.display()))?;
+    match std::io::copy(&mut response, &mut file) {
+        Ok(bytes) => {
+            file.flush()?;
+            Ok(bytes)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(path);
+            Err(error).with_context(|| "Could not write the downloaded Notes attachment")
+        }
+    }
+}
+
 fn reminders_now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
@@ -2679,6 +3957,11 @@ fn decompress_crdt_document(bytes: &[u8]) -> Vec<u8> {
     if gzip.read_to_end(&mut output).is_ok() && !output.is_empty() {
         return output;
     }
+    output.clear();
+    let mut deflate = flate2::read::DeflateDecoder::new(bytes);
+    if deflate.read_to_end(&mut output).is_ok() && !output.is_empty() {
+        return output;
+    }
     bytes.to_vec()
 }
 
@@ -3267,6 +4550,7 @@ mod tests {
                 session_headers: BTreeMap::new(),
                 cookies_json: "[]".into(),
                 reminders_pcs_ready: true,
+                notes_pcs_ready: false,
                 pending: None,
             },
             base,
@@ -3284,6 +4568,7 @@ mod tests {
                 )]),
                 cookies_json: "[]".into(),
                 reminders_pcs_ready: false,
+                notes_pcs_ready: false,
                 pending: Some(PendingChallenge {
                     method: VerificationMethod::Device,
                     phone: Some(json!({"id":1})),
@@ -3778,14 +5063,14 @@ mod tests {
     #[test]
     fn reminders_text_update_preserves_crdt_and_handles_unicode_and_clear() {
         let original = encode_reminders_text_document("Old title").unwrap();
-        let edited = encode_reminders_text_edit(&original, "New 🧾 title").unwrap();
+        let edited = encode_reminders_text_edit(&original, "New ðŸ§¾ title").unwrap();
         assert_eq!(
             cloudkit_text_field(
                 Some(&json!({"TitleDocument":{"type":"STRING","value":edited}})),
                 "TitleDocument"
             )
             .unwrap(),
-            "New 🧾 title"
+            "New ðŸ§¾ title"
         );
         let cleared = encode_reminders_text_edit(&edited, "").unwrap();
         assert_eq!(
@@ -3988,5 +5273,118 @@ mod tests {
             AppleConnection::restore(session).unwrap().auth_state(),
             "authenticated"
         );
+    }
+
+    #[test]
+    fn notes_recents_uses_notes_container_and_maps_search_index_fields() {
+        let path = "/database/1/com.apple.notes/production/private/records/query";
+        let (base, server) = server(vec![reply(
+            "POST",
+            path,
+            200,
+            json!({"records":[{
+                "recordName":"NOTE-1","recordType":"SearchIndexes",
+                "fields":{"TitleEncrypted":{"type":"STRING","value":"Alpha project"},
+                    "SnippetEncrypted":{"type":"STRING","value":"First words"},
+                    "ModificationDate":{"type":"TIMESTAMP","value":1735776000000i64},
+                    "Folder":{"type":"REFERENCE","value":{"recordName":"FOLDER-1"}},
+                    "Deleted":{"type":"INT64","value":0}}
+            }],"continuationMarker":null}),
+        )]);
+        let mut connection = cloudkit_connection(&base);
+        connection.session.notes_pcs_ready = true;
+
+        let (rows, more) = connection.notes_search(Some("PROJECT"), 0, 10).unwrap();
+
+        assert!(!more);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], "NOTE-1");
+        assert_eq!(rows[0]["title"], "Alpha project");
+        assert_eq!(rows[0]["folder_id"], "FOLDER-1");
+        let requests = server.join().unwrap();
+        assert!(requests[0].target.starts_with(path));
+        assert_eq!(requests[0].body["query"]["recordType"], "SearchIndexes");
+    }
+
+    #[test]
+    fn notes_body_decoder_reads_gzipped_notestore_protobuf() {
+        let text = "Synthetic note body";
+        let mut note = Vec::new();
+        protobuf_put_bytes(&mut note, 2, text.as_bytes());
+        let mut document = Vec::new();
+        protobuf_put_bytes(&mut document, 3, &note);
+        let mut root = Vec::new();
+        protobuf_put_bytes(&mut root, 2, &document);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&root).unwrap();
+        let encoded = STANDARD.encode(encoder.finish().unwrap());
+
+        assert_eq!(
+            decode_notes_body(STANDARD.decode(encoded).unwrap()),
+            Some(text.into())
+        );
+        assert_eq!(
+            notes_field_text(
+                Some(
+                    &json!({"TitleEncrypted":{"type":"ENCRYPTED_BYTES","value":STANDARD.encode("Title")}})
+                ),
+                "TitleEncrypted"
+            ),
+            json!("Title")
+        );
+    }
+
+    #[test]
+    fn notes_body_decoder_reads_raw_deflate_notestore_protobuf() {
+        let text = "Synthetic raw-deflate note body";
+        let mut note = Vec::new();
+        protobuf_put_bytes(&mut note, 2, text.as_bytes());
+        let mut document = Vec::new();
+        protobuf_put_bytes(&mut document, 3, &note);
+        let mut root = Vec::new();
+        protobuf_put_bytes(&mut root, 2, &document);
+        let mut encoder =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&root).unwrap();
+
+        assert_eq!(
+            decode_notes_body(encoder.finish().unwrap()),
+            Some(text.into())
+        );
+    }
+
+    #[test]
+    fn notes_record_names_preserve_raw_cloudkit_ids() {
+        assert_eq!(notes_record_name("NOTE-1", "Note"), "NOTE-1");
+        assert_eq!(notes_record_name("Note/NOTE-1", "Note"), "NOTE-1");
+        assert_eq!(notes_record_name("FOLDER-1", "Folder"), "FOLDER-1");
+    }
+
+    #[test]
+    fn notes_private_data_access_uses_notes_pcs_service_name() {
+        let (base, server) = server(vec![
+            reply(
+                "POST",
+                "/requestWebAccessState",
+                200,
+                json!({"isICDRSDisabled":true,"isDeviceConsentedForPCS":true}),
+            ),
+            reply("POST", "/requestPCS", 200, json!({"status":"success"})),
+            reply(
+                "POST",
+                "/database/1/com.apple.notes/production/private/changes/zone",
+                200,
+                json!({"zones":[{"records":[],"syncToken":"notes-test-cursor","moreComing":false}]}),
+            ),
+        ]);
+        let mut connection = cloudkit_connection(&base);
+        connection.session.reminders_pcs_ready = false;
+        connection.session.notes_pcs_ready = false;
+
+        assert!(connection.notes_folders().unwrap().is_empty());
+
+        let requests = server.join().unwrap();
+        assert_eq!(requests[1].body["appName"], "notes");
+        assert!(connection.session.notes_pcs_ready);
     }
 }

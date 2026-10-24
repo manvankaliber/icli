@@ -24,9 +24,9 @@ use std::{
 #[derive(Parser)]
 #[command(
     name = "icli",
-    version,
-    about = "Read and manage iCloud Calendar, Contacts, Mail, and Reminders",
-    long_about = "Read and manage iCloud Calendar, Mail, Contacts, and Apple Reminders. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
+    disable_version_flag = true,
+    about = "Read and manage iCloud Calendar, Contacts, Mail, Reminders, and Notes",
+    long_about = "Read and manage iCloud Calendar, Mail, Contacts, Apple Reminders, and Apple Notes. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
     before_help = concat!(
         "Running icli v",
         env!("CARGO_PKG_VERSION"),
@@ -34,12 +34,18 @@ use std::{
         env!("ICLI_RELEASE_DATE"),
         "."
     ),
-    override_usage = "icli <update|config|auth|calendar|agenda|calender|mail|contacts|reminders|help> [OPTIONS]",
+    override_usage = "icli <version|update|config|auth|calendar|agenda|calender|mail|contacts|reminders|notes|help> [OPTIONS]",
     after_help = "Run `icli <command> --help` to read that command's instructions and accepted arguments. Put command-specific options after the command.\n\nOptions available: --json, --format <agent|csv|json>, --help, --version."
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
+    #[arg(
+        long,
+        global = true,
+        help = "Show installed version and update-check status"
+    )]
+    version: bool,
     #[arg(long, global = true)]
     json: bool,
     #[arg(long, global = true, value_enum)]
@@ -49,6 +55,12 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
+    #[command(
+        about = "Show the installed iCLI version and update-check status",
+        long_about = "Show the installed version, when this executable was installed, and when iCLI last checked for updates. When the installation is more than three months old and no successful update check has run in the last two weeks, the report recommends `icli update --check` or `icli update`.",
+        after_help = "Options available: --json, --format <agent|csv|json>, --help."
+    )]
+    Version,
     #[command(
         about = "Update this executable to the latest stable iCLI release",
         long_about = "Check GitHub for the latest stable manvankaliber/icli release. Without --check, download the matching binary, verify its published SHA-256 checksum, and replace this executable in place. Current or newer versions are left unchanged. Supports release targets on Windows, macOS, and GNU Linux for x86-64/ARM64. Requires network access and write access to the executable directory; no iCloud account is needed. Source and package-managed installations should use their original update method to preserve that installation. Restart a running MCP adapter after updating its executable.",
@@ -124,6 +136,23 @@ enum Command {
         email: Option<String>,
         #[command(subcommand)]
         action: Option<RemindersCommand>,
+    },
+    #[command(
+        about = "Read, search, export, and manage Apple Notes",
+        long_about = "Read Apple Notes through Apple's private CloudKit service using the saved Apple Account session. Browse folders and recent notes, search recent titles or search the full Notes zone with --all, read attachment metadata, download attachment files, export text/Markdown/HTML, and inspect incremental changes. HTML and Markdown exports download attachments to a sibling assets folder unless --no-assets is set. Explicit soft-delete commands require --yes and leave shared notes unchanged. Apple may require trusted-device approval for Notes data.",
+        override_usage = "icli notes <folders|recent|list|search|get|render|export|download|delete|delete-unshared|changes|sync-cursor> [OPTIONS]",
+        after_help = "Note IDs are stable CloudKit record names. Output uses structured agent text by default; use --json or --format csv|json for machine-readable data. Search uses the recents feed unless --all is specified. Attachment downloads write local files and never overwrite existing files. Delete commands soft-delete Notes records, require --yes, and verify each result; delete-unshared checks share metadata before every write."
+    )]
+    Notes {
+        #[arg(
+            long,
+            value_name = "EMAIL",
+            global = true,
+            help = "Apple Account address used for Notes sign-in"
+        )]
+        email: Option<String>,
+        #[command(subcommand)]
+        action: Option<NotesCommand>,
     },
 }
 #[derive(Subcommand)]
@@ -351,6 +380,98 @@ enum RemindersCommand {
         #[command(subcommand)]
         action: ReminderRecurrenceCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum NotesCommand {
+    #[command(about = "List Notes folders")]
+    Folders,
+    #[command(about = "List recent notes")]
+    Recent {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+    },
+    #[command(about = "List recent notes or all notes in the CloudKit zone")]
+    List {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+        #[arg(
+            long,
+            help = "Enumerate the full Notes zone instead of the recents feed"
+        )]
+        all: bool,
+        #[arg(long, value_name = "FOLDER_ID")]
+        folder_id: Option<String>,
+        #[arg(long, value_name = "CURSOR", requires = "all")]
+        since: Option<String>,
+    },
+    #[command(about = "Search recent or all Notes by title")]
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
+        #[arg(long, help = "Search every note instead of only the recent feed")]
+        all: bool,
+    },
+    #[command(about = "Read one note by its stable ID")]
+    Get {
+        id: String,
+        #[arg(long, help = "Include attachment metadata")]
+        with_attachments: bool,
+    },
+    #[command(about = "Render one note's text as an HTML fragment")]
+    Render { id: String },
+    #[command(about = "Export a note as text, Markdown, or HTML")]
+    Export {
+        id: String,
+        #[arg(long, value_name = "FILE", required = true)]
+        output: PathBuf,
+        #[arg(long, value_enum, default_value = "text", value_name = "FORMAT")]
+        export_format: NotesExportFormat,
+        #[arg(long, help = "Skip attachment downloads for HTML/Markdown exports")]
+        no_assets: bool,
+    },
+    #[command(about = "Download a note's attachments")]
+    Download {
+        id: String,
+        #[arg(long, value_name = "DIRECTORY", required = true)]
+        output_dir: PathBuf,
+    },
+    #[command(about = "Soft-delete one note; requires --yes")]
+    Delete {
+        id: String,
+        #[arg(long, required = true, help = "Confirm this iCloud Notes deletion")]
+        yes: bool,
+    },
+    #[command(about = "Soft-delete all unshared notes; requires --yes")]
+    DeleteUnshared {
+        #[arg(
+            long,
+            required = true,
+            help = "Confirm deletion of every currently unshared note"
+        )]
+        yes: bool,
+    },
+    #[command(about = "Read incremental note changes from a sync cursor")]
+    Changes {
+        #[arg(long, value_name = "CURSOR")]
+        since: Option<String>,
+    },
+    #[command(about = "Read the current opaque Notes sync cursor")]
+    SyncCursor,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum NotesExportFormat {
+    Text,
+    Markdown,
+    Html,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -2471,7 +2592,7 @@ fn apply_contact_patch(existing: Option<&str>, uid: &str, patch: &[String]) -> R
     Ok(card)
 }
 
-fn config_path() -> Result<PathBuf> {
+pub(crate) fn config_dir() -> Result<PathBuf> {
     let root = if cfg!(windows) {
         std::env::var_os("APPDATA")
             .map(PathBuf::from)
@@ -2493,7 +2614,10 @@ fn config_path() -> Result<PathBuf> {
         root.join("icli")
     };
     fs::create_dir_all(&dir)?;
-    Ok(dir.join("config.toml"))
+    Ok(dir)
+}
+fn config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("config.toml"))
 }
 fn load_config() -> Result<Config> {
     let p = config_path()?;
@@ -3021,6 +3145,7 @@ fn help_target() -> String {
             "--json" => index += 1,
             "--format" => index = (index + 2).min(args.len()),
             value if value.starts_with("--format=") => index += 1,
+            "--version" => index += 1,
             value if value.starts_with('-') && command_words.is_empty() => return "icli".into(),
             value => {
                 command_words.push(value.to_string());
@@ -3031,6 +3156,7 @@ fn help_target() -> String {
 
     let mut path = vec!["icli"];
     match command_words.first().map(String::as_str) {
+        Some("version") => path.push("version"),
         Some("update") => path.push("update"),
         Some("config") | Some("auth") | Some("mail") | Some("contacts") => {
             path.push(command_words[0].as_str());
@@ -3083,6 +3209,25 @@ fn help_target() -> String {
                 .get(1)
                 .filter(|v| ["lists", "list"].contains(&v.as_str()))
             {
+                path.push(action);
+            }
+        }
+        Some("notes") => {
+            path.push("notes");
+            if let Some(action) = command_words.get(1).filter(|v| {
+                [
+                    "folders",
+                    "recent",
+                    "list",
+                    "search",
+                    "get",
+                    "render",
+                    "export",
+                    "changes",
+                    "sync-cursor",
+                ]
+                .contains(&v.as_str())
+            }) {
                 path.push(action);
             }
         }
@@ -3270,6 +3415,9 @@ fn cli_quote(value: &str) -> String {
 }
 
 fn invocation_action() -> String {
+    if std::env::args().any(|arg| arg == "--version") {
+        return "version".into();
+    }
     let mut action = help_target().trim_start_matches("icli ").replace(' ', ".");
     if ["mail", "contacts", "calendar.events"].contains(&action.as_str()) {
         action.push_str(".list");
@@ -3522,6 +3670,9 @@ fn print_startup_summary() {
     println!("  icli calendar events <list|search|get|create|update|delete|import>");
     println!("  icli auth add EMAIL");
     println!("  icli reminders <lists|list> --email EMAIL");
+    println!(
+        "  icli notes <folders|recent|list|search|get|render|export|changes|sync-cursor> --email EMAIL"
+    );
     println!("  icli config <default-user|format>");
     println!("  icli mail");
     println!("  icli contacts");
@@ -3578,7 +3729,15 @@ fn run_cli(cli: Cli) -> Result<()> {
         cli.format.unwrap_or(saved_format)
     };
     response::configure(invocation_action(), output_format);
-    match cli.command {
+    if cli.version {
+        update::version_status()?;
+        return Ok(());
+    }
+    let command = cli
+        .command
+        .ok_or_else(|| anyhow!("Choose a command. Run `icli --help` to see available commands."))?;
+    match command {
+        Command::Version => update::version_status()?,
         Command::Update { check } => update::run(check)?,
         Command::Config { command } => {
             let mut config = load_config()?;
@@ -4214,6 +4373,260 @@ fn run_cli(cli: Cli) -> Result<()> {
             persist_result?;
             output(&data, output_format, title)?;
         }
+        Command::Notes {
+            email,
+            action: Some(action),
+        } => {
+            let email = selected_auth_email(email)?;
+            let mut connection = load_apple_connection(&email)?;
+            connection.require_authenticated()?;
+            let result =
+                match action {
+                    NotesCommand::Folders => connection
+                        .notes_folders()
+                        .map(|rows| (serde_json::json!(rows), "Apple Notes folders")),
+                    NotesCommand::Recent { skip, limit } => connection
+                        .notes_recent(skip, limit)
+                        .map(|(rows, has_more)| {
+                            if has_more {
+                                response::next(format!(
+                                    "icli notes recent --email {} --skip {} --limit {limit}",
+                                    cli_quote(&connection.session.account),
+                                    skip.saturating_add(rows.len())
+                                ));
+                            }
+                            (serde_json::json!(rows), "Recent Apple Notes")
+                        }),
+                    NotesCommand::List {
+                        skip,
+                        limit,
+                        all,
+                        folder_id,
+                        since,
+                    } => {
+                        let (rows, has_more, cursor) = if all {
+                            connection.notes_list_all(
+                                skip,
+                                limit,
+                                since.as_deref(),
+                                folder_id.as_deref(),
+                            )?
+                        } else if let Some(folder) = folder_id.as_deref() {
+                            connection.notes_recent_in_folder(folder, skip, limit)?
+                        } else {
+                            let (rows, more) = connection.notes_recent(skip, limit)?;
+                            (rows, more, None)
+                        };
+                        if has_more {
+                            response::next(format!(
+                                "icli notes list --email {} {}--skip {} --limit {limit}",
+                                cli_quote(&connection.session.account),
+                                if all { "--all " } else { "" },
+                                skip.saturating_add(rows.len())
+                            ));
+                        }
+                        let mut data = serde_json::json!({"notes":rows,"more_available":has_more});
+                        if let Some(cursor) = cursor {
+                            data["cursor"] = serde_json::json!(cursor);
+                        }
+                        Ok((data, "Apple Notes"))
+                    }
+                    NotesCommand::Search {
+                        query,
+                        skip,
+                        limit,
+                        all,
+                    } => {
+                        let search = if all {
+                            connection
+                                .notes_search_all(&query, skip, limit)
+                                .map(|(rows, has_more, _)| (rows, has_more))
+                        } else {
+                            connection.notes_search(Some(&query), skip, limit)
+                        };
+                        search.map(|(rows, has_more)| {
+                            if has_more {
+                                response::next(format!(
+                                    "icli notes search {} {}--email {} --skip {} --limit {limit}",
+                                    cli_quote(&query),
+                                    if all { "--all " } else { "" },
+                                    cli_quote(&connection.session.account),
+                                    skip.saturating_add(rows.len())
+                                ));
+                            }
+                            (serde_json::json!(rows), "Apple Notes title search")
+                        })
+                    }
+                    NotesCommand::Get {
+                        id,
+                        with_attachments,
+                    } => connection
+                        .notes_get(&id, with_attachments)
+                        .map(|row| (row, "Apple note")),
+                    NotesCommand::Render { id } => connection.notes_get(&id, false).map(|row| {
+                        let title = row
+                            .get("title")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let text = row
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("");
+                        let html = render_note_text(title, text);
+                        (
+                            serde_json::json!({"id":row.get("id"),"html":html}),
+                            "Rendered Apple note",
+                        )
+                    }),
+                    NotesCommand::Export {
+                        id,
+                        output: path,
+                        export_format,
+                        no_assets,
+                    } => {
+                        let result = (|| -> Result<(serde_json::Value, &'static str)> {
+                            let row = connection.notes_get(&id, false)?;
+                            let title = row
+                                .get("title")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Untitled");
+                            let text = row
+                                .get("text")
+                                .and_then(serde_json::Value::as_str)
+                                .context("Apple did not return readable text for this note")?;
+                            let wants_assets = !no_assets
+                                && matches!(
+                                    export_format,
+                                    NotesExportFormat::Markdown | NotesExportFormat::Html
+                                );
+                            let stem = path
+                                .file_stem()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("note");
+                            let assets_dir = path
+                                .parent()
+                                .filter(|parent| !parent.as_os_str().is_empty())
+                                .unwrap_or(std::path::Path::new("."))
+                                .join(format!("{stem}_assets"));
+                            let asset_result = if wants_assets {
+                                Some(connection.notes_download_attachments(&id, &assets_dir)?)
+                            } else {
+                                None
+                            };
+                            if asset_result.as_ref().is_some_and(|result| {
+                                result["failed"]
+                                    .as_array()
+                                    .is_some_and(|items| !items.is_empty())
+                            }) {
+                                response::status(3);
+                            }
+                            let attachments = asset_result
+                                .as_ref()
+                                .and_then(|result| result["downloaded"].as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            let assets_folder = assets_dir
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("assets");
+                            let contents = match export_format {
+                                NotesExportFormat::Text => text.to_owned(),
+                                NotesExportFormat::Markdown => {
+                                    render_note_markdown(title, text, &attachments, assets_folder)
+                                }
+                                NotesExportFormat::Html => {
+                                    render_note_html_page(title, text, &attachments, assets_folder)
+                                }
+                            };
+                            fs::write(&path, &contents).with_context(|| {
+                                format!("Could not write note export to {}", path.display())
+                            })?;
+                            Ok((
+                                serde_json::json!({
+                                    "id":row.get("id"),
+                                    "path":path,
+                                    "format":format!("{:?}",export_format).to_lowercase(),
+                                    "bytes":contents.len(),
+                                    "attachments":asset_result
+                                }),
+                                "Exported Apple note",
+                            ))
+                        })();
+                        result
+                    }
+                    NotesCommand::Download { id, output_dir } => connection
+                        .notes_download_attachments(&id, &output_dir)
+                        .map(|row| {
+                            if row["failed"]
+                                .as_array()
+                                .is_some_and(|items| !items.is_empty())
+                            {
+                                response::status(3);
+                            }
+                            (row, "Apple Notes attachments")
+                        }),
+                    NotesCommand::Changes { since } => {
+                        connection.notes_changes(since.as_deref()).map(|row| {
+                            if row
+                                .get("more_available")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                            {
+                                if let Some(cursor) =
+                                    row.get("cursor").and_then(serde_json::Value::as_str)
+                                {
+                                    response::next(format!(
+                                        "icli notes changes --email {} --since {}",
+                                        cli_quote(&connection.session.account),
+                                        cli_quote(cursor)
+                                    ));
+                                }
+                            }
+                            (row, "Apple Notes changes")
+                        })
+                    }
+                    NotesCommand::Delete { id, .. } => connection
+                        .notes_delete(&id)
+                        .map(|row| (row, "Soft-deleted Apple note")),
+                    NotesCommand::DeleteUnshared { .. } => {
+                        connection.notes_delete_unshared().map(|row| {
+                            if row["failed"]
+                                .as_array()
+                                .is_some_and(|items| !items.is_empty())
+                            {
+                                response::status(3);
+                            }
+                            if row["skipped_shared"]
+                                .as_array()
+                                .is_some_and(|items| !items.is_empty())
+                            {
+                                response::warning("Shared Notes were skipped and left unchanged");
+                            }
+                            (row, "Unshared Apple Notes delete results")
+                        })
+                    }
+                    NotesCommand::SyncCursor => connection.notes_sync_cursor().map(|cursor| {
+                        (
+                            serde_json::json!({"cursor":cursor}),
+                            "Apple Notes sync cursor",
+                        )
+                    }),
+                };
+            let persist_result = connection
+                .save_cookies()
+                .and_then(|()| save_apple_session(&connection.session));
+            let (data, title) = result?;
+            persist_result?;
+            output(&data, output_format, title)?;
+        }
+        Command::Notes { action: None, .. } => {
+            if output_format == OutputFormat::Json {
+                bail!(
+                    "Provide a Notes subcommand. Run `icli notes --help` for available operations."
+                );
+            }
+            print_help_for_current_invocation();
+        }
         Command::Reminders { action: None, .. } => {
             if output_format == OutputFormat::Json {
                 bail!(
@@ -4229,6 +4642,148 @@ fn run_cli(cli: Cli) -> Result<()> {
 fn looks_like_date_input(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 5 && bytes[..4].iter().all(u8::is_ascii_digit) && bytes[4] == b'-'
+}
+
+fn render_note_text(title: &str, text: &str) -> String {
+    fn escape(value: &str, out: &mut String) {
+        for ch in value.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                '\'' => out.push_str("&#39;"),
+                _ => out.push(ch),
+            }
+        }
+    }
+    let mut html = String::new();
+    if !title.is_empty() {
+        html.push_str("<h1>");
+        escape(title, &mut html);
+        html.push_str("</h1>\n");
+    }
+    for (index, paragraph) in text.split("\n\n").enumerate() {
+        if index > 0 {
+            html.push('\n');
+        }
+        html.push_str("<p>");
+        for (line_index, line) in paragraph.split('\n').enumerate() {
+            if line_index > 0 {
+                html.push_str("<br>\n");
+            }
+            escape(line, &mut html);
+        }
+        html.push_str("</p>");
+    }
+    html
+}
+
+fn render_note_markdown(
+    title: &str,
+    text: &str,
+    attachments: &[serde_json::Value],
+    assets_folder: &str,
+) -> String {
+    let mut markdown = format!("# {}\n\n{}", title.trim(), text.trim());
+    if !attachments.is_empty() {
+        markdown.push_str("\n\n## Attachments\n");
+        for attachment in attachments {
+            let filename = attachment
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("attachment");
+            let uti = attachment
+                .get("uti")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let target = format!(
+                "{}/{}",
+                encode_uri_path(assets_folder),
+                encode_uri_path(filename)
+            );
+            let label = filename
+                .replace('\\', "\\\\")
+                .replace('[', "\\[")
+                .replace(']', "\\]");
+            if uti.starts_with("public.image")
+                || matches!(uti, "public.jpeg" | "public.png" | "public.heic")
+            {
+                markdown.push_str(&format!("\n- ![{label}]({target})"));
+            } else {
+                markdown.push_str(&format!("\n- [{label}]({target})"));
+            }
+        }
+    }
+    markdown.push('\n');
+    markdown
+}
+
+fn render_note_html_page(
+    title: &str,
+    text: &str,
+    attachments: &[serde_json::Value],
+    assets_folder: &str,
+) -> String {
+    fn escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+    let mut page = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{}</title><style>body{{max-width:52rem;margin:3rem auto;padding:0 1.25rem;font:16px/1.6 system-ui,sans-serif;color:#202124}}img{{max-width:100%;height:auto}}pre{{white-space:pre-wrap}}.attachments{{border-top:1px solid #ddd;margin-top:2rem;padding-top:1rem}}</style></head><body>{}",
+        escape(title),
+        render_note_text(title, text)
+    );
+    if !attachments.is_empty() {
+        page.push_str("<section class=\"attachments\"><h2>Attachments</h2><ul>");
+        for attachment in attachments {
+            let filename = attachment
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("attachment");
+            let uti = attachment
+                .get("uti")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let target = format!(
+                "{}/{}",
+                encode_uri_path(assets_folder),
+                encode_uri_path(filename)
+            );
+            if uti.starts_with("public.image")
+                || matches!(uti, "public.jpeg" | "public.png" | "public.heic")
+            {
+                page.push_str(&format!(
+                    "<li><a href=\"{target}\"><img src=\"{target}\" alt=\"{}\"></a></li>",
+                    escape(filename)
+                ));
+            } else {
+                page.push_str(&format!(
+                    "<li><a href=\"{target}\">{}</a></li>",
+                    escape(filename)
+                ));
+            }
+        }
+        page.push_str("</ul></section>");
+    }
+    page.push_str("</body></html>\n");
+    page
+}
+
+fn encode_uri_path(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 fn date_bound(s: &str, end: bool) -> Result<DateTime<Utc>> {
@@ -8496,7 +9051,7 @@ mod tests {
         let positional = Cli::try_parse_from(["icli", "auth", "add", "jane@icloud.com"]).unwrap();
         assert!(matches!(
             positional.command,
-            Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: Some(ref email), email_flag: None, .. }) }
+            Some(Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: Some(ref email), email_flag: None, .. }) })
                 if email == "jane@icloud.com"
         ));
 
@@ -8504,7 +9059,7 @@ mod tests {
             Cli::try_parse_from(["icli", "auth", "add", "--email", "jane@icloud.com"]).unwrap();
         assert!(matches!(
             flagged.command,
-            Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: None, email_flag: Some(ref email), .. }) }
+            Some(Command::Auth { command: AuthCommand::Add(AuthCredentialArgs { email: None, email_flag: Some(ref email), .. }) })
                 if email == "jane@icloud.com"
         ));
 

@@ -1,13 +1,15 @@
 ---
 title: iCloud CLI
-description: Use iCLI to work with iCloud Calendar, Contacts, Mail, and Apple Reminders from the command line.
+description: Use iCLI to work with iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes from the command line.
 ---
 
 # iCloud CLI
 
 iCLI reads and manages iCloud Calendar, Contacts, and Mail through CalDAV,
 CardDAV, and IMAP. Apple Reminders uses a separate private CloudKit integration
-with reads, writes, and incremental sync.
+with reads, writes, and incremental sync. Apple Notes uses Apple's private
+CloudKit service for browsing, text export, incremental changes, and guarded
+soft-deletion of unshared notes.
 It provides command help, explicit identifiers, structured
 results, and recovery instructions for agents and shell scripts.
 
@@ -30,7 +32,7 @@ changes that have not reached a published release.
 | Task                                                              | Command                                                                     |
 | ----------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | Save credentials for Calendar, Contacts, and Mail                 | `icli auth app-password`                                                    |
-| Sign in to Apple private services for Reminders                   | `icli auth add EMAIL`, `icli auth verify EMAIL CODE`                        |
+| Sign in to Apple private services for Reminders and Notes         | `icli auth add EMAIL`, `icli auth verify EMAIL CODE`                        |
 | Check service authentication                                      | `icli auth check`, `icli auth check --app-password`                         |
 | List or remove local accounts                                     | `icli auth list`, `icli auth remove`                                        |
 | Set account or output defaults                                    | `icli config default-user`, `icli config format`                            |
@@ -39,6 +41,7 @@ changes that have not reached a published release.
 | Discover Mail operations                                          | `icli mail`                                                                 |
 | Discover Contacts operations                                      | `icli contacts`                                                             |
 | Read, edit, or sync Apple Reminders                               | `icli reminders`                                                            |
+| Browse, search, read, or export Apple Notes                       | `icli notes folders/recent/list/search/get/render/export/changes`           |
 | Discover contact properties                                       | `icli contacts help`                                                        |
 | Read, search, or manage contacts and groups                       | `icli contacts list/search/get/me/create/update/delete/groups`              |
 | Search mail, download attachments, draft/send, or manage messages | `icli mail folders/list/search/get/download/create/send/update/move/delete` |
@@ -79,13 +82,14 @@ or `calendar events import`; both default to two requests. See the
 
 - [Getting started](./icloud-cli/getting-started): install iCLI and connect your iCloud account.
 - [Agent guide](./icloud-cli/agent-guide): the compact operating procedure for task-oriented agents.
-- [Agent skills](./icloud-cli/skills): install one standalone app skill or the five-skill bundle.
+- [Agent skills](./icloud-cli/skills): install one standalone app skill or the six-skill bundle.
 - [Update iCLI](./icloud-cli/updating): install the latest release or update a source build.
 - [Account and output settings](./icloud-cli/account-and-output): manage credentials, accounts, and response formats.
 - [Calendar](./icloud-cli/calendar): manage calendars and events.
 - [Contacts](./icloud-cli/contacts): find, create, and update contacts.
 - [Mail](./icloud-cli/mail): read messages, save drafts, and manage flags.
 - [Apple Reminders](./icloud-cli/reminders): sign in, read and edit reminders, sync changes, and manage supported related records.
+- [Apple Notes](./icloud-cli/notes): browse folders and notes, search titles, read and export text, and read incremental changes.
 - [Errors and recovery](./icloud-cli/recovery): interpret failures and partial results.
 
 Use `icli --help` and `icli <command> --help` for options and side effects in your installed version. iCLI is an independent project and is not affiliated with or endorsed by Apple.

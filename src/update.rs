@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
+use chrono::{DateTime, Duration as ChronoDuration, Months, Utc};
 use reqwest::blocking::Client;
 use semver::Version;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -14,6 +15,7 @@ const REPOSITORY: &str = "https://github.com/manvankaliber/icli";
 const LATEST: &str = "https://api.github.com/repos/manvankaliber/icli/releases/latest";
 const MAX_ARCHIVE: u64 = 64 * 1024 * 1024;
 const MAX_BINARY: u64 = 128 * 1024 * 1024;
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 #[derive(Deserialize)]
 struct Release {
@@ -26,6 +28,108 @@ struct Release {
 #[derive(Deserialize)]
 struct Asset {
     name: String,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct VersionState {
+    version: Option<String>,
+    installed_at: Option<DateTime<Utc>>,
+    last_update_check: Option<DateTime<Utc>>,
+}
+
+fn state_path() -> Result<std::path::PathBuf> {
+    Ok(crate::config_dir()?.join("version-state.json"))
+}
+
+fn load_state() -> Result<VersionState> {
+    let path = state_path()?;
+    if !path.exists() {
+        return Ok(VersionState::default());
+    }
+    serde_json::from_slice(&fs::read(path)?).context("Could not read iCLI version state")
+}
+
+fn save_state(state: &VersionState) -> Result<()> {
+    fs::write(state_path()?, serde_json::to_vec_pretty(state)?)?;
+    Ok(())
+}
+
+fn executable_install_time() -> Option<DateTime<Utc>> {
+    let modified = std::env::current_exe()
+        .ok()?
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(DateTime::<Utc>::from(modified))
+}
+
+fn release_date_time() -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(concat!(env!("ICLI_RELEASE_DATE"), "T00:00:00Z"))
+        .expect("ICLI_RELEASE_DATE is a valid date")
+        .with_timezone(&Utc)
+}
+
+pub fn version_status() -> Result<()> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    let now = Utc::now();
+    let mut state = load_state()?;
+    if state.version.as_deref() != Some(current_version) {
+        state.version = Some(current_version.to_string());
+        state.installed_at = executable_install_time().or(Some(release_date_time()));
+    }
+    let installed_at = state.installed_at.unwrap_or_else(release_date_time);
+    let installed_over_three_months = installed_at < now - Months::new(3);
+    let checked_recently = state.last_update_check.is_some_and(|checked| {
+        checked >= now - ChronoDuration::from_std(UPDATE_CHECK_INTERVAL).unwrap()
+    });
+    let recommend_update_check = installed_over_three_months && !checked_recently;
+    let installed_display = installed_at.format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let last_check_display = state
+        .last_update_check
+        .map(|checked| checked.format("%Y-%m-%d %H:%M:%S UTC").to_string());
+    let mut message = format!(
+        "The system has version {current_version} of iCLI installed since {installed_display}."
+    );
+    if let Some(checked) = &last_check_display {
+        message.push_str(&format!(
+            " The last successful update check ran on {checked}."
+        ));
+    } else {
+        message.push_str(" No successful update check has been recorded.");
+    }
+    if recommend_update_check {
+        message.push_str(" This installation is more than three months old, and no successful update check has run in the last two weeks. Run `icli update --check` to check without installing, or `icli update` to install the latest stable version.");
+        crate::response::next("icli update --check");
+        crate::response::next("icli update");
+    }
+    save_state(&state)?;
+    crate::response::selected(
+        &serde_json::json!({
+            "message": message,
+            "version": current_version,
+            "installed_since": installed_display,
+            "last_successful_update_check": last_check_display,
+            "update_check_recommended": recommend_update_check,
+        }),
+        "iCLI version status",
+    )?;
+    Ok(())
+}
+
+fn record_update_check(version: &str, updated: bool) -> Result<()> {
+    let mut state = load_state()?;
+    state.last_update_check = Some(Utc::now());
+    if updated || state.version.as_deref() != Some(version) {
+        state.version = Some(version.to_string());
+        state.installed_at = if updated {
+            Some(Utc::now())
+        } else {
+            executable_install_time().or(Some(release_date_time()))
+        };
+    }
+    save_state(&state)
 }
 
 pub fn run(check: bool) -> Result<()> {
@@ -77,6 +181,13 @@ pub fn run(check: bool) -> Result<()> {
             .context("Could not replace the iCLI executable; check directory permissions or use the original installation method")?;
         updated = true;
     }
+
+    let installed_version = if updated {
+        latest.to_string()
+    } else {
+        current.to_string()
+    };
+    record_update_check(&installed_version, updated)?;
 
     crate::response::next(if available && check {
         "icli update"

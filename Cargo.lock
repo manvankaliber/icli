@@ -423,6 +423,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1190,7 +1191,7 @@ dependencies = [
 
 [[package]]
 name = "icli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

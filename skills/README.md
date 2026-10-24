@@ -1,6 +1,6 @@
 # iCloud agent skills
 
-Five standalone Agent Skills let an agent use iCLI for an iCloud task without
+Six standalone Agent Skills let an agent use iCLI for an iCloud task without
 first learning the repository. Each includes a local copy of the operating
 guide, so installing one skill is sufficient.
 
@@ -8,18 +8,20 @@ guide, so installing one skill is sufficient.
 - `icloud-calendar`: read and manage events, calendars, sharing, and imports.
 - `icloud-mail`: search messages, download attachments, draft/send, and manage mail.
 - `icloud-reminders`: read and manage Apple Reminders, related records, and incremental changes.
+- `icloud-notes`: browse and read Apple Notes, export note text, and read incremental changes.
 - `icloud`: explicit iCLI setup/usage and workflows spanning supported services.
 
 Install the skill relevant to your task from this repository:
 
 ```sh
 npx skills add manvankaliber/icli --skill icloud-reminders
+npx skills add manvankaliber/icli --skill icloud-notes
 ```
 
-Or install the five-skill bundle from the same repository:
+Or install the six-skill bundle from the same repository:
 
 ```sh
-npx skills add manvankaliber/icli --skill icloud icloud-calendar icloud-contacts icloud-mail icloud-reminders
+npx skills add manvankaliber/icli --skill icloud icloud-calendar icloud-contacts icloud-mail icloud-reminders icloud-notes
 ```
 
 The installer offers supported agent destinations. Publishing the repository

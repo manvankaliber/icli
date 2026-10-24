@@ -5,13 +5,13 @@ description: Install, authenticate, and complete iCloud tasks with iCLI as an ag
 
 # iCLI agent guide
 
-Use iCLI to complete tasks in iCloud Calendar, Contacts, Mail, and Apple Reminders. If a connected tool already meets the request, use it. iCLI accesses iCloud data, including data synced from Apple apps; it does not access data stored only on a device or hosted by another provider.
+Use iCLI to complete tasks in iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes. If a connected tool already meets the request, use it. iCLI accesses iCloud data, including data synced from Apple apps; it does not access data stored only on a device or hosted by another provider.
 
 Keep this operating procedure in context. For later tasks, use the installed CLI's help as the authority for commands, flags, defaults, and side effects. Do not infer options from old examples or research Apple protocols when CLI help answers the question.
 
 ## Install and update
 
-Check whether `icli --version` works. If absent, install the latest published release for the current platform.
+Check whether `icli version` works. If absent, install the latest published release for the current platform. `icli version` and `icli --version` report the installed version, executable installation timestamp, and last successful update check. The report recommends `icli update --check` or `icli update` only when the installation is more than three months old and no successful check ran in the last two weeks.
 
 macOS or Linux:
 
@@ -68,6 +68,7 @@ Start with `icli --help`, then the relevant command group and leaf help. Help is
 - Contacts and contact search/groups: `icli contacts --help`, `icli contacts groups --help`.
 - Mail search, folders, drafts, sending, attachments: `icli mail --help`.
 - Apple Reminders: `icli reminders --help`. This group requires the saved Apple Account session established by `auth add` and `auth verify`. Read lists, reminders, snapshots, incremental changes, and related records. Reminder writes include create, update, status, soft-delete, alarms, hashtags, URL attachments, and recurrence rules. Inspect stable IDs and target records before writing; remote deletes require `--yes`. Reminder reads return 100 items by default; follow `next_steps` and keep account scope unchanged when paging with `--skip` and `--limit`. The first read may ask Apple to request trusted-device approval for encrypted Reminders data; approve it and retry.
+- Apple Notes: `icli notes --help`. This group uses the saved Apple Account session from `auth add` and `auth verify`. Browse folders and recent notes, search recent titles or all titles with `search QUERY --all`, read plain text and attachment metadata, download attachments, export text/Markdown/HTML, and read incremental changes. HTML/Markdown exports download available assets beside the output unless `--no-assets` is set. Notes IDs are CloudKit record names; preserve the account when paging or resuming with `--since`. The first read may require trusted-device approval for encrypted Notes data; approve it and retry. `notes delete ID --yes` soft-deletes one unshared note; `notes delete-unshared --yes` soft-deletes every active unshared note and leaves shared notes unchanged. These commands check share metadata before each write and read back each deletion. Exported HTML/Markdown preserve decoded text and attachment copies; not all rich Notes styling is reconstructed.
 - Machine parsing: add `--json`. Human/agent text is the initial default; saved format settings may change it.
 
 For text search, use `icli calendar events search QUERY`, `icli contacts search QUERY`, or `icli mail search QUERY`. Read each command's `--help` for field selection, date or folder scope, and matching rules before constructing a query.
@@ -93,6 +94,7 @@ For downloads, check range/limit completeness and distinguish structured JSON fr
 - [Download and manage contacts](https://managing.software/docs/guide/usage/icloud-cli/contacts.md)
 - [Search and manage mail](https://managing.software/docs/guide/usage/icloud-cli/mail.md)
 - [Apple Reminders](https://managing.software/docs/guide/usage/icloud-cli/reminders.md)
+- [Apple Notes](https://managing.software/docs/guide/usage/icloud-cli/notes.md)
 - [Recovery](https://managing.software/docs/guide/usage/icloud-cli/recovery.md)
 
 Use these when a workflow needs explanation. Use the installed CLI's help for the exact invocation.

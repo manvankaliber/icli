@@ -22,10 +22,10 @@ Install the relevant skill:
 npx skills add manvankaliber/icli --skill icloud-reminders
 ```
 
-Install the five-skill bundle:
+Install the six-skill bundle:
 
 ```sh
-npx skills add manvankaliber/icli --skill icloud icloud-calendar icloud-contacts icloud-mail icloud-reminders
+npx skills add manvankaliber/icli --skill icloud icloud-calendar icloud-contacts icloud-mail icloud-reminders icloud-notes
 ```
 
 The skills CLI lets you choose the supported agent destination. Installing a

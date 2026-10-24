@@ -45,6 +45,7 @@ export const enConfig = defineLocaleConfig("root", {
             { text: "Contacts", link: "/docs/guide/usage/icloud-cli/contacts" },
             { text: "Mail", link: "/docs/guide/usage/icloud-cli/mail" },
             { text: "Apple Reminders", link: "/docs/guide/usage/icloud-cli/reminders" },
+            { text: "Apple Notes", link: "/docs/guide/usage/icloud-cli/notes" },
             { text: "Errors and recovery", link: "/docs/guide/usage/icloud-cli/recovery" },
           ],
         },
