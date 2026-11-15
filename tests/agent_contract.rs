@@ -46,13 +46,7 @@ fn missing_account_recovery_names_service_credentials_and_scopes_notes_help() {
             "--email",
             "simulation@example.invalid",
         ],
-        vec![
-            "--json",
-            "notes",
-            "create",
-            "--title",
-            "Simulation",
-        ],
+        vec!["--json", "notes", "create", "--title", "Simulation"],
     ] {
         let result = sandbox.run(&args);
         assert!(!result.status.success());
