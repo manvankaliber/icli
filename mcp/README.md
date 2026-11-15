@@ -7,7 +7,7 @@ additional Rust dependencies are required.
 
 ## Build and run
 
-Build iCLI from the repository root with Rust 1.85 or newer:
+Build iCLI from the repository root with Rust 1.88 or newer:
 
 ```sh
 cargo build --release --bin icli

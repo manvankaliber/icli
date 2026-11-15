@@ -10,7 +10,7 @@ Thanks for helping improve iCLI. Keep changes focused on the command-line interf
 
 ## Development
 
-You need Rust 1.85 or newer.
+You need Rust 1.88 or newer.
 
 ```sh
 cargo build

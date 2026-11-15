@@ -2,7 +2,7 @@
 name = "icli"
 version = "1.4.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A small agent-friendly CLI for iCloud Calendar, Mail, Contacts, Apple Reminders, and Notes"
 license = "MIT"
 
@@ -40,7 +40,7 @@ self-replace = "1.5"
 tempfile = "3"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 toml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"

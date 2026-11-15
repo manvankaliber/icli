@@ -32,7 +32,7 @@ The project is independent of Apple. Changes should not imply Apple endorsement 
 
 ## Build and test
 
-The project requires Rust 1.85 or newer.
+The project requires Rust 1.88 or newer.
 
 ```sh
 cargo build

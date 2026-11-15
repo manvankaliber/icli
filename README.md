@@ -44,7 +44,7 @@ Use `icli <command> --help` to discover operations, `--json` for structured resu
 
 ## Development
 
-Rust 1.85+: `cargo build --release` and `cargo test`.
+Rust 1.88+: `cargo build --release` and `cargo test`.
 See [AGENTS.md](AGENTS.md), [contributing](CONTRIBUTING.md), and [security](SECURITY.md).
 
 [MIT license](LICENSE). Independent project; not affiliated with Apple.
