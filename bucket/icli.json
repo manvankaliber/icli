@@ -1,16 +1,16 @@
 {
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Agent-friendly CLI for Apple iCloud",
   "homepage": "https://github.com/manvankaliber/icli",
   "license": "MIT",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-x86_64-pc-windows-msvc.zip",
-      "hash": "95b18798d06f2783e8384f5d5a78a369572bf4038d616ee0aea313dc6e589efa"
+      "url": "https://github.com/manvankaliber/icli/releases/download/v1.4.1/icli-v1.4.1-x86_64-pc-windows-msvc.zip",
+      "hash": "ea5af8b8b8de1fa047d7c61394b40175eaed9d236a5e7388ea8825558fe8b9fc"
     },
     "arm64": {
-      "url": "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-aarch64-pc-windows-msvc.zip",
-      "hash": "d748d34c34a9f23ffdf95df8c169addcb30338b2705e796a84c4656c9593f04c"
+      "url": "https://github.com/manvankaliber/icli/releases/download/v1.4.1/icli-v1.4.1-aarch64-pc-windows-msvc.zip",
+      "hash": "ccaa361c7ed0b4637fb22844853f147896e3f98d8786ba0f39497342a8e1786b"
     }
   },
   "bin": "icli.exe",
