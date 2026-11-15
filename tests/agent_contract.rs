@@ -52,8 +52,6 @@ fn missing_account_recovery_names_service_credentials_and_scopes_notes_help() {
             "create",
             "--title",
             "Simulation",
-            "--email",
-            "simulation@example.invalid",
         ],
     ] {
         let result = sandbox.run(&args);
@@ -63,7 +61,7 @@ fn missing_account_recovery_names_service_credentials_and_scopes_notes_help() {
         let hint = value["error"]["hint"].as_str().unwrap();
         if args[1] == "notes" {
             assert!(hint.contains("auth add"));
-            assert!(hint.contains("--password-stdin"));
+            assert!(hint.contains("private stdin"));
             assert_eq!(value["error"]["help"], "icli notes create --help");
         } else {
             assert!(hint.contains("auth app-password"), "{args:?}: {value}");
