@@ -2534,8 +2534,7 @@ fn run_mail(action: MailCommand, format: OutputFormat) -> Result<()> {
                 chrono::Utc::now().to_rfc2822(),
                 args.body
             );
-            s.append_with_flags("Drafts", raw.as_bytes(), &["\\Draft".into()])
-                .context("Could not save the message to the Drafts folder")?;
+            save_mail_draft(&mut s, raw.as_bytes())?;
             mail_logout(&mut s);
             output(
                 &draft_result(&args.to, &args.subject, &a.email),
@@ -2624,12 +2623,10 @@ fn run_mail(action: MailCommand, format: OutputFormat) -> Result<()> {
     }
 }
 
-fn mail_session(
-    email: &str,
-    password: &str,
-) -> Result<imap::Session<native_tls::TlsStream<std::net::TcpStream>>> {
-    let tls = native_tls::TlsConnector::new()?;
-    let client = imap::connect(("imap.mail.me.com", 993), "imap.mail.me.com", &tls)
+fn mail_session(email: &str, password: &str) -> Result<imap::Session<imap::Connection>> {
+    let client = imap::ClientBuilder::new("imap.mail.me.com", 993)
+        .mode(imap::ConnectionMode::Tls)
+        .connect()
         .context("Could not connect to iCloud Mail IMAP")?;
     client
         .login(email, password)
@@ -2651,7 +2648,7 @@ fn write_new_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
         .with_context(|| format!("Could not write {}", path.display()))
 }
 
-fn mail_logout(session: &mut imap::Session<native_tls::TlsStream<std::net::TcpStream>>) {
+fn mail_logout<T: Read + Write>(session: &mut imap::Session<T>) {
     if let Err(error) = session.logout() {
         response::warning(format!(
             "Mail operation completed, but logout could not be confirmed: {error}. The connection is closed locally; do not repeat a completed write."
@@ -10352,3 +10349,15 @@ fn notes_page_command(
 
 #[cfg(test)]
 mod workflow_tests;
+
+fn save_mail_draft<T: Read + Write>(session: &mut imap::Session<T>, raw: &[u8]) -> Result<()> {
+    session
+        .append("Drafts", raw)
+        .flag(imap::types::Flag::Draft)
+        .finish()
+        .context("Could not save the message to the Drafts folder")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod mail_tests;

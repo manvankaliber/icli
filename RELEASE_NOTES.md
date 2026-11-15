@@ -1,11 +1,9 @@
-# iCLI 1.4.0
+# iCLI 1.4.1
 
-iCLI is complete as a standalone CLI. The README now focuses on installation and supported apps; the documentation website, benchmark placeholders, and comparison graphics have been removed. Detailed instructions remain in the agent guide, bundled skills, and command help.
+Fix the remaining dependency security alert, [GHSA-2326-pfpj-vx3h](https://github.com/advisories/GHSA-2326-pfpj-vx3h) / RUSTSEC-2024-0377, by removing the old IMAP parser dependency chain containing `lexical-core`.
 
-- Preserve calendar timezone/all-day metadata in default event output.
-- Keep account/folder scope in Mail follow-ups and folder/cursor filters in Notes pagination.
-- Improve draft confirmation, authentication recovery, Notes help, and agent completion guidance.
-- Update ZIP and time dependencies to patched versions; source builds now require Rust 1.88 or newer.
-- Add an offline calendar-to-draft-and-note rehearsal with no live account access.
+- Pin upstream `imap` to `3.0.0-alpha.15`, which uses the newer parser without `lexical-core`. This dependency is a prerelease; iCLI's command and response contracts remain unchanged.
+- Require TLS for iCloud IMAP connections and preserve Drafts plus the draft flag with the new append API.
+- Verify mail parsing, draft persistence commands, rejection handling, and UID-scoped operations with synthetic in-memory IMAP replies. No live iCloud data is used.
 
-Validation: Rust tests, Python MCP tests, formatting, and generated-guide checks. See [workflow review](tests/agent-workflow-review.md) for findings and simulation limits. Private Apple web-service integrations retain their documented limitations.
+Validation: Rust tests, formatting, bundled guide checks, MCP tests, and all six release builds.

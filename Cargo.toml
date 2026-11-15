@@ -1,6 +1,6 @@
 [package]
 name = "icli"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 rust-version = "1.88"
 description = "A small agent-friendly CLI for iCloud Calendar, Mail, Contacts, Apple Reminders, and Notes"
@@ -20,7 +20,8 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive"] }
 ical = "0.11"
-imap = "2.4.1"
+# Pin the upstream parser migration: the 2.x dependency graph includes vulnerable lexical-core.
+imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["native-tls"] }
 keyring = "4.2"
 mailparse = "0.16"
 native-tls = "0.2"

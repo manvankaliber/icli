@@ -339,7 +339,7 @@ fn enrich(mut command: Command, path: String) -> Command {
             "Download and decode one MIME attachment part. Get part IDs from `icli mail get UID --folder FOLDER`; the output path is written locally.",
         ),
         "icli mail create" => Some(
-            "Save an unsent plain-text message in the selected account's Drafts folder. Requires --to, --subject, and --body. This creates a remote draft and does not send mail. Header line breaks are rejected. Returns recipient, subject, account email, folder, and sent=false. The server does not return a draft UID through the current IMAP append operation.",
+            "Save an unsent plain-text message in the selected account's Drafts folder. Requires --to, --subject, and --body. This creates a remote draft and does not send mail. Header line breaks are rejected. Returns recipient, subject, account email, folder, and sent=false. The CLI does not expose a draft UID; inspect Drafts if further work needs one.",
         ),
         "icli mail send" => Some(
             "Send a plain-text message through iCloud SMTP. Requires --to, --subject, and --body. Use commas to separate recipients. Header line breaks are rejected. Sending is a remote action and cannot be undone.",
@@ -696,7 +696,7 @@ fn enrich(mut command: Command, path: String) -> Command {
         }
         "icli mail download" => "object: uid, folder, part, path, bytes",
         "icli mail create" => {
-            "object: to, subject, email, folder=Drafts, sent=false; this IMAP operation does not return the draft UID"
+            "object: to, subject, email, folder=Drafts, sent=false; the CLI does not expose the draft UID"
         }
         "icli mail send" => "object: to, subject, sent=true",
         "icli mail update" => "object: uid, flag, updated=true",
