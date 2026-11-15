@@ -5,7 +5,7 @@ description: Use iCLI for requests involving iCloud Calendar, Contacts, Mail, Ap
 
 # iCloud with iCLI
 
-Read [references/agent-guide.md](references/agent-guide.md) for installation, once-per-session updating, private authentication, command discovery, output handling, and recovery. This skill works without another skill being installed.
+Read [references/agent-guide.md](references/agent-guide.md) for installation, version checks and updates, private authentication, command discovery, output handling, and recovery. This skill works without another skill being installed.
 
 Identify which services the user's task needs, then inspect their installed CLI help. Use `icli calendar --help`, `icli contacts --help`, `icli mail --help`, `icli reminders --help`, `icli notes --help`, or the relevant experimental group (`drive`, `photos`, `find-my`, `hide-my-email`, `account`, `invites`), followed by leaf help. For a single core service, the corresponding app skill may provide more specific guidance if installed; it is optional.
 

@@ -38,7 +38,6 @@ node scripts/sync-agent-docs.mjs
 node scripts/sync-agent-docs.mjs --check
 ```
 
-The generator packages the guide under each skill's `references/`, creates
-the website agent page, and writes the website's concise `llms.txt` index.
+The generator packages the guide under each skill's `references/`.
 Each installed skill remains self-contained; references do not depend on
 another installed skill or a checkout of this repository.

@@ -21,4 +21,4 @@ For incremental sync, save the opaque cursor from `icli reminders sync-cursor` o
 
 Remote writes are separate operations and are not rolled back if a later command fails. Check each result. If a write's outcome is uncertain, read the target before retrying it. Follow structured `error.hint`, `error.help`, and `next_steps` when a command fails.
 
-Detailed recipe: https://managing.software/docs/guide/usage/icloud-cli/reminders.md. Installed CLI help is the exact command reference.
+Use the bundled [agent guide](references/agent-guide.md) for workflows and installed CLI help for exact commands.

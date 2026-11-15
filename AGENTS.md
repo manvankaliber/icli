@@ -4,7 +4,7 @@ This file gives coding agents the project context and contribution rules. Agents
 
 ## Project overview
 
-iCLI is a Rust command-line tool for iCloud Calendar, Contacts, and Mail. It connects through CalDAV, CardDAV, and IMAP. Its default output is intended for agents, with stable resource identifiers, follow-up suggestions, structured errors, and recovery hints. JSON and CSV formats are also available.
+iCLI is a Rust command-line tool for iCloud services. Calendar, Contacts, and Mail connect through CalDAV, CardDAV, and IMAP; the other integrations use Apple web services. The project is complete and CLI-only; maintain existing functionality without adding a documentation website. Its default output is intended for agents, with stable resource identifiers, follow-up suggestions, structured errors, and recovery hints. JSON and CSV formats are also available.
 
 The project is independent of Apple. Changes should not imply Apple endorsement or use private iCloud data in fixtures, examples, or reports.
 
@@ -14,9 +14,9 @@ The project is independent of Apple. Changes should not imply Apple endorsement 
 - `src/help.rs` contains detailed command help text.
 - `src/update.rs` checks stable releases, verifies archives, and updates the executable.
 - `AGENT_GUIDE.md` is the consumer agent operating procedure. `skills/` packages it for individual agent skills.
-- `scripts/sync-agent-docs.mjs` generates bundled skill references, the website agent guide, and `llms.txt`; use `--check` to detect drift.
+- `scripts/sync-agent-docs.mjs` generates bundled skill references; use `--check` to detect drift.
 - `tests/` contains integration and behavior tests.
-- `README.md` documents user workflows and the current feature comparison.
+- `README.md` documents installation and the supported apps.
 - `CONTRIBUTING.md` has contribution and pull request guidance.
 - `SECURITY.md` explains how to report vulnerabilities.
 
@@ -43,4 +43,4 @@ Tests should run without an iCloud account. Live requests can read or change rea
 
 ## Before handing off
 
-Update README feature and comparison rows when behavior changes. Run the checks relevant to the change, review the final diff, and report any live iCloud testing or account changes. Never include credentials or personal calendar, mail, or contact data in the handoff.
+Keep the README concise; put detailed workflows and service limitations in AGENT_GUIDE.md and CLI help. Run the checks relevant to the change, review the final diff, and report any live iCloud testing or account changes. Never include credentials or personal calendar, mail, or contact data in the handoff.

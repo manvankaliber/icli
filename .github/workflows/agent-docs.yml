@@ -6,8 +6,6 @@ on:
       - AGENT_GUIDE.md
       - skills/**
       - scripts/sync-agent-docs.mjs
-      - website/public/llms.txt
-      - website/src/docs/guide/usage/icloud-cli/agent-guide.md
       - .github/workflows/agent-docs.yml
   push:
     branches: [main]
@@ -15,8 +13,6 @@ on:
       - AGENT_GUIDE.md
       - skills/**
       - scripts/sync-agent-docs.mjs
-      - website/public/llms.txt
-      - website/src/docs/guide/usage/icloud-cli/agent-guide.md
       - .github/workflows/agent-docs.yml
 
 permissions:
@@ -27,5 +23,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check portable skill guides and website discovery documents
+      - name: Check portable skill guides
         run: node scripts/sync-agent-docs.mjs --check

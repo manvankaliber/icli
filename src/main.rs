@@ -26,7 +26,7 @@ use std::{
     name = "icli",
     disable_version_flag = true,
     about = "Use iCloud services from the command line",
-    long_about = "Use iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes. Experimental private-service commands also cover iCloud Drive, Photos, Find My device actions, Apple Invites, account data, and Hide My Email operations. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL CODE`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
+    long_about = "Use iCloud Calendar, Contacts, Mail, Apple Reminders, and Apple Notes. Experimental private-service commands also cover iCloud Drive, Photos, Find My device actions, Apple Invites, account data, and Hide My Email operations. Start Apple Account sign-in with `icli auth add EMAIL`, then submit its verification code with `icli auth verify EMAIL`. The trusted session is saved in the OS credential store and reused by default. For Mail, Calendar, and Contacts, save a recommended app-specific password with `icli auth app-password EMAIL`. Choose the default account with `icli config default-user EMAIL`. Output defaults to agent text; use --json or --format agent|csv|json.",
     before_help = concat!(
         "Running icli v",
         env!("CARGO_PKG_VERSION"),
@@ -169,7 +169,7 @@ enum Command {
     },
     #[command(
         about = "Read and manage Apple Reminders",
-        long_about = "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when required; the saved trusted session is reused. The first read may request trusted-device approval for encrypted Reminders data. The command group supports reminder and list reads, reminder create/update/complete/delete, list create/rename/delete, snapshots and incremental sync, alarms, hashtags, URL attachments, and recurrence rules. This is Apple Reminders, not Calendar tasks.",
+        long_about = "Read and manage Apple Reminders through Apple's private CloudKit service. Start with `icli auth add EMAIL`, then `icli auth verify EMAIL` when required; the saved trusted session is reused. The first read may request trusted-device approval for encrypted Reminders data. The command group supports reminder and list reads, reminder create/update/complete/delete, list create/rename/delete, snapshots and incremental sync, alarms, hashtags, URL attachments, and recurrence rules. This is Apple Reminders, not Calendar tasks.",
         after_help = "Use `icli reminders lists` and `icli reminders list` to inspect data before writing. IDs are stable CloudKit record names. Remote deletes require `--yes`. All writes target Apple CloudKit and are not rolled back if a later separate operation fails."
     )]
     Reminders {
@@ -588,7 +588,7 @@ enum AuthCommand {
 enum RemindersCommand {
     #[command(
         about = "List Reminders lists",
-        long_about = "Read Apple Reminders lists from the selected Apple Account. Output includes each list name and its stable service ID. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
+        long_about = "Read Apple Reminders lists from the selected Apple Account. Output includes each list name and its stable service ID. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
         after_help = "Options: --email EMAIL, --json, --format <agent|csv|json>, --help."
     )]
     Lists {
@@ -597,7 +597,7 @@ enum RemindersCommand {
     },
     #[command(
         about = "List reminders across all lists",
-        long_about = "Read active and completed Apple Reminders across all lists. Output includes reminder ID, title, list, completion state, and due date where available. Results default to the first 100 reminders; use --skip and --limit to page through more. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL CODE` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
+        long_about = "Read active and completed Apple Reminders across all lists. Output includes reminder ID, title, list, completion state, and due date where available. Results default to the first 100 reminders; use --skip and --limit to page through more. Sign in with `icli auth add EMAIL`, then `icli auth verify EMAIL` when requested. The first read may request trusted-device approval for encrypted Reminders data.",
         after_help = "Options: --skip N (default 0), --limit N (default 100), --email EMAIL, --json, --format <agent|csv|json>, --help. This command does not change reminder data."
     )]
     List {
@@ -2538,7 +2538,7 @@ fn run_mail(action: MailCommand, format: OutputFormat) -> Result<()> {
                 .context("Could not save the message to the Drafts folder")?;
             mail_logout(&mut s);
             output(
-                &serde_json::json!({"to":args.to,"subject":args.subject,"folder":"Drafts","sent":false}),
+                &draft_result(&args.to, &args.subject, &a.email),
                 format,
                 "Created draft",
             )
@@ -2571,7 +2571,7 @@ fn run_mail(action: MailCommand, format: OutputFormat) -> Result<()> {
             };
             s.uid_store(args.uid.to_string(), format!("{op} ({flag})"))?;
             mail_logout(&mut s);
-            response::next(format!("icli mail get {} --email {}", args.uid, a.email));
+            response::next(mail_read_command(args.uid, &args.folder, &a.email));
             output(
                 &serde_json::json!({"uid":args.uid,"flag":args.flag,"updated":true}),
                 format,
@@ -3740,15 +3740,29 @@ fn validate_calendar_include(include: &[String]) -> Result<()> {
 }
 
 fn output_events(
-    mut events: Vec<serde_json::Value>,
+    events: Vec<serde_json::Value>,
     format: OutputFormat,
     include: &[String],
     no_results_hint: Option<&str>,
 ) -> Result<()> {
+    output(
+        &prepare_events(events, include, no_results_hint),
+        format,
+        "Calendar events",
+    )
+}
+
+fn prepare_events(
+    mut events: Vec<serde_json::Value>,
+    include: &[String],
+    no_results_hint: Option<&str>,
+) -> Vec<serde_json::Value> {
     const DEFAULT_FIELDS: &[&str] = &[
         "summary",
         "start",
         "end",
+        "dtstart_params",
+        "dtend_params",
         "location",
         "description",
         "uid",
@@ -3811,7 +3825,7 @@ fn output_events(
             response::next(hint);
         }
     }
-    output(&events, format, "Calendar events")
+    events
 }
 
 fn help_target() -> String {
@@ -3894,6 +3908,11 @@ fn help_target() -> String {
             path.push("notes");
             if let Some(action) = command_words.get(1).filter(|v| {
                 [
+                    "create",
+                    "update",
+                    "download",
+                    "delete",
+                    "delete-unshared",
                     "folders",
                     "recent",
                     "list",
@@ -3960,10 +3979,10 @@ fn next_step(error: &anyhow::Error) -> String {
     if lower.contains("account not configured")
         || lower.contains("configured default user is not an added account")
     {
-        return "Run `icli auth list` to see configured accounts. Add the intended account with `icli auth add EMAIL`, or select one with `--email EMAIL` / `icli config default-user EMAIL`.".into();
+        return "Run `icli auth list` and select the intended account with `--email EMAIL`. For Calendar/Contacts/Mail, configure `icli auth app-password EMAIL`; for other services use `icli auth add EMAIL`, then `icli auth verify EMAIL`. Use private stdin or hidden terminal prompts for secrets.".into();
     }
     if lower.contains("choose an account by passing") {
-        return "Run `icli auth list`, then pass one listed address as EMAIL or set it with `icli config default-user EMAIL`.".into();
+        return "Run `icli auth list`, then select one listed address with `--email EMAIL`. If none are configured: Calendar/Contacts/Mail need `icli auth app-password EMAIL`; other services need `icli auth add EMAIL`, then `icli auth verify EMAIL`. Use private stdin or hidden terminal prompts for secrets.".into();
     }
     if lower.contains("account already configured") {
         return "Use `icli auth app-password EMAIL --password-stdin` to replace an app-specific password, or `icli auth add EMAIL --password-stdin` to restart Apple sign-in.".into();
@@ -5504,11 +5523,13 @@ fn run_cli(cli: Cli) -> Result<()> {
                         (rows, more, None)
                     };
                     if has_more {
-                        response::next(format!(
-                            "icli notes list --email {} {}--skip {} --limit {limit}",
-                            cli_quote(&connection.session.account),
-                            if all { "--all " } else { "" },
-                            skip.saturating_add(rows.len())
+                        response::next(notes_page_command(
+                            &connection.session.account,
+                            all,
+                            folder_id.as_deref(),
+                            since.as_deref(),
+                            skip.saturating_add(rows.len()),
+                            limit,
                         ));
                     }
                     let mut data = serde_json::json!({"notes":rows,"more_available":has_more});
@@ -10288,3 +10309,46 @@ mod tests {
         assert!(Cli::try_parse_from(["icli", "mail"]).is_ok());
     }
 }
+
+// Keep follow-up commands scoped to the resource that produced the result.
+fn mail_read_command(uid: u32, folder: &str, email: &str) -> String {
+    format!(
+        "icli mail get {uid} --folder {} --email {}",
+        cli_quote(folder),
+        cli_quote(email)
+    )
+}
+
+fn draft_result(to: &str, subject: &str, email: &str) -> serde_json::Value {
+    response::next(format!(
+        "Draft saved; no mail was sent. If you need to inspect it, run icli mail search {} --folder Drafts --email {} and match recipient/body before using a UID. Do not recreate a successful draft.",
+        cli_quote(subject),
+        cli_quote(email)
+    ));
+    serde_json::json!({"to":to,"subject":subject,"email":email,"folder":"Drafts","sent":false})
+}
+
+fn notes_page_command(
+    email: &str,
+    all: bool,
+    folder: Option<&str>,
+    since: Option<&str>,
+    skip: usize,
+    limit: usize,
+) -> String {
+    let mut command = format!("icli notes list --email {}", cli_quote(email));
+    if all {
+        command.push_str(" --all");
+    }
+    if let Some(folder) = folder {
+        command.push_str(&format!(" --folder-id {}", cli_quote(folder)));
+    }
+    if let Some(since) = since {
+        command.push_str(&format!(" --since {}", cli_quote(since)));
+    }
+    command.push_str(&format!(" --skip {skip} --limit {limit}"));
+    command
+}
+
+#[cfg(test)]
+mod workflow_tests;

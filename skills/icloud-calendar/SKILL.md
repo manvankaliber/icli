@@ -15,4 +15,4 @@ For scheduling, use realistic requested dates and durations. Inspect existing ev
 
 ICS import creates independent resources and may partially succeed. Inspect each item's final status and `attempt_errors`; never retry the entire file blindly. Use the installed defaults unless the user's workload warrants adjusting concurrency.
 
-Detailed recipes: https://managing.software/docs/guide/usage/icloud-cli/calendar.md. Prefer installed CLI help for exact invocation details.
+Use the bundled [agent guide](references/agent-guide.md) for workflows and installed CLI help for exact commands.

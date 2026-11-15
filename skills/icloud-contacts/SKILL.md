@@ -13,4 +13,4 @@ For a contact download, choose the required output format and completeness. List
 
 Use actual contact fields to disambiguate people. For edits, specify only intended properties. Preserve omitted properties and pay attention to grouped Apple fields and structured vCard values; read the file-input help when those matter. A supplied group of values can replace existing values for that property. Re-read and merge after an ETag conflict rather than repeating an outdated update.
 
-Detailed recipes: https://managing.software/docs/guide/usage/icloud-cli/contacts.md. Use installed CLI help for exact flags and supported export formats.
+Use the bundled [agent guide](references/agent-guide.md) for workflows and installed CLI help for exact commands.

@@ -15,4 +15,4 @@ Download an attachment using its returned part ID and a suitable local destinati
 
 Distinguish creating a draft from sending. `mail create` saves a remote draft; `mail send` delivers the message. Follow the user's actual authorization, preserve the requested recipients/content, and do not infer permission to send from a request to draft. Moving and deletion change the mailbox; after a move, use newly returned identifiers rather than assuming the old UID remains valid.
 
-Detailed recipes: https://managing.software/docs/guide/usage/icloud-cli/mail.md. Treat installed CLI help as the exact command reference.
+Use the bundled [agent guide](references/agent-guide.md) for workflows and installed CLI help for exact commands.

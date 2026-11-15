@@ -10,7 +10,21 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install keyring build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes pkg-config libdbus-1-dev
+      - run: cargo fmt --check
+      - run: cargo test --locked
+      - run: node scripts/sync-agent-docs.mjs --check
+      - run: python3 -m unittest discover -s mcp -p 'test_*.py'
   build:
+    needs: validate
     name: Build ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -64,6 +78,19 @@ jobs:
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') && (github.event_name == 'workflow_dispatch' || github.event.created == true)
         with:
+          draft: true
+          body_path: RELEASE_NOTES.md
           files: |
             icli-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}
             icli-${{ github.ref_name }}-${{ matrix.target }}.${{ matrix.archive }}.sha256
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') && (github.event_name == 'workflow_dispatch' || github.event.created == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish only after all platform archives are uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -21,9 +21,9 @@ Tests should run without an iCloud account. If you need to exercise live iCloud 
 
 ## Documentation and agent skills
 
-`README.md` introduces the product. `AGENT_GUIDE.md` is the short operating
+`README.md` introduces the product. `AGENT_GUIDE.md` is the detailed operating
 procedure for agents using iCLI; `AGENTS.md` is contributor guidance. Detailed
-workflows belong in `website/src/docs/guide/usage/icloud-cli/`. Exact command
+workflows belong in `AGENT_GUIDE.md`. Exact command
 behavior belongs in CLI help, not a second handwritten flag catalog.
 
 After editing the agent guide or discovery links, run:
@@ -33,10 +33,7 @@ node scripts/sync-agent-docs.mjs
 node scripts/sync-agent-docs.mjs --check
 ```
 
-The generator updates each standalone skill's bundled guide, the website
-agent page, and the curated `llms.txt`. Website dev/build runs it too. The
-existing VitePress plugin generates individual Markdown pages; its broad
-indexes are disabled so they do not overwrite the curated index.
+The generator updates each standalone skill's bundled guide. There is no documentation website.
 
 Validate each `skills/*/SKILL.md` as an Agent Skill. Descriptions should match
 real iCloud tasks and distinguish local-only Apple app data. Keep shared

@@ -36,6 +36,42 @@ impl Drop for Sandbox {
 }
 
 #[test]
+fn missing_account_recovery_names_service_credentials_and_scopes_notes_help() {
+    let sandbox = Sandbox::new();
+    for args in [
+        vec![
+            "--json",
+            "calendar",
+            "list",
+            "--email",
+            "simulation@example.invalid",
+        ],
+        vec![
+            "--json",
+            "notes",
+            "create",
+            "--title",
+            "Simulation",
+            "--email",
+            "simulation@example.invalid",
+        ],
+    ] {
+        let result = sandbox.run(&args);
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let value: serde_json::Value = serde_json::from_slice(&result.stderr).unwrap();
+        let hint = value["error"]["hint"].as_str().unwrap();
+        if args[1] == "notes" {
+            assert!(hint.contains("auth add"));
+            assert!(hint.contains("--password-stdin"));
+            assert_eq!(value["error"]["help"], "icli notes create --help");
+        } else {
+            assert!(hint.contains("auth app-password"), "{args:?}: {value}");
+        }
+    }
+}
+
+#[test]
 fn format_changes_and_explicit_overrides_work_without_an_account() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "format", "json"]);
