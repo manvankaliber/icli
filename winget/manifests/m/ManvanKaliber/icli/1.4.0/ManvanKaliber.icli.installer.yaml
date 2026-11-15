@@ -1,0 +1,20 @@
+PackageIdentifier: ManvanKaliber.icli
+PackageVersion: 1.4.0
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-x86_64-pc-windows-msvc.zip
+    InstallerSha256: 95B18798D06F2783E8384F5D5A78A369572BF4038D616EE0AEA313DC6E589EFA
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: icli.exe
+        PortableCommandAlias: icli
+  - Architecture: arm64
+    InstallerUrl: https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-aarch64-pc-windows-msvc.zip
+    InstallerSha256: D748D34C34A9F23FFDF95DF8C169ADDCB30338B2705E796A84C4656C9593F04C
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: icli.exe
+        PortableCommandAlias: icli
+ManifestType: installer
+ManifestVersion: 1.12.0

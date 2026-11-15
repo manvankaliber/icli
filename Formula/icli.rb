@@ -1,25 +1,25 @@
 class Icli < Formula
-  desc "Agent-friendly CLI for iCloud Calendar, Mail, and Contacts"
+  desc "Agent-friendly CLI for Apple iCloud"
   homepage "https://github.com/manvankaliber/icli"
-  version "0.1.0"
+  version "1.4.0"
   license "MIT"
 
   if OS.mac?
     if Hardware::CPU.arm?
-      url "https://github.com/manvankaliber/icli/releases/download/v0.1.0/icli-v0.1.0-aarch64-apple-darwin.tar.gz"
-      sha256 "e37d48cb846e33b1bc486ed31e5aa6d28594df0f5e79057c0b5a7310bff1c6b9"
+      url "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-aarch64-apple-darwin.tar.gz"
+      sha256 "3cbeb66a0e150c90054618a67267883f14cd77bd63414a83f5990d7053b4eb1f"
     else
-      url "https://github.com/manvankaliber/icli/releases/download/v0.1.0/icli-v0.1.0-x86_64-apple-darwin.tar.gz"
-      sha256 "4abec4ecc982594b28e688409cd6145b4d4fe43e24d79bc06d1600b2bee7f332"
+      url "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-x86_64-apple-darwin.tar.gz"
+      sha256 "d8318353a7e9892c4354134617e25e4370a849945725cf6dfa59fb148a94d766"
     end
   else
     depends_on "dbus"
     if Hardware::CPU.arm?
-      url "https://github.com/manvankaliber/icli/releases/download/v0.1.0/icli-v0.1.0-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "b2b4c44abc5b207912732958bbac0a3afc949e5fa9be4f2ab80795b49d3c5f8a"
+      url "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "c3095a5c0ff51152edde2043e8bf66a69cbdb893f4d6e5d6d96790c3b6e08cdf"
     else
-      url "https://github.com/manvankaliber/icli/releases/download/v0.1.0/icli-v0.1.0-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "0c01c6631a81c08420e8f03d051c304ad1a7307eb787232f0de20de0e3cbea98"
+      url "https://github.com/manvankaliber/icli/releases/download/v1.4.0/icli-v1.4.0-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "e6d86394021af8794f490b38067cb2244af2c22afbc239aa50e9bd05a4aa17df"
     end
   end
 
